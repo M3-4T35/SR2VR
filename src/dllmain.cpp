@@ -1,5 +1,5 @@
 // SR2VR - point d'entrée de la DLL injectée dans SR2_pc.exe (32 bits)
-// Jalon 1 : la DLL se charge, décrit le processus dans sr2_vr.log et ne détourne rien.
+// Décrit le processus dans sr2_vr.log, puis installe les hooks du rendu.
 #include <windows.h>
 #include <tlhelp32.h>
 #include <winver.h>
@@ -11,6 +11,7 @@
 #include <ctime>
 #include <string>
 
+#include "render/d3d9_hook.h"
 #include "util/log.h"
 
 namespace {
@@ -207,13 +208,20 @@ DWORD WINAPI InitThread(LPVOID)
     LogModule("xaudio2_7.dll", "son", gameDir.c_str());
     LogAllModules();
 
-    // MinHook prêt pour le jalon 2 ; rien n'est détourné à ce stade
     const MH_STATUS status = MH_Initialize();
     g_minhookReady = status == MH_OK;
     LOG_CORE("MinHook : %s", MH_StatusToString(status));
 
     LogGameWindow();
-    LOG_CORE("jalon 1 : aucun hook pose, le jeu tourne sans modification");
+
+    if (!g_minhookReady || !render::InstallD3D9Hooks()) {
+        LOG_CORE("hook du renderer indisponible : le jeu continue sans VR");
+        return 0;
+    }
+    // Le jeu présente-t-il des images par les fonctions détournées ? Vérifié une fois.
+    Sleep(15000);
+    if (render::PresentCount() == 0)
+        LOG_CORE("ATTENTION : aucun Present vu 15 s apres l'installation des hooks");
     return 0;
 }
 
@@ -230,6 +238,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         // FreeLibrary explicite : on retire les hooks. À la fermeture du processus
         // (reserved != nullptr) les autres threads sont déjà morts, on ne touche à rien.
+        render::RemoveD3D9Hooks();
         if (g_minhookReady)
             MH_Uninitialize();
     }

@@ -8,6 +8,7 @@
 #include "xr/xr_session.h"
 #include "input/keys.h"
 #include "render/frame_capture.h"
+#include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_input.h"
 
@@ -16,6 +17,7 @@
 
 #include <atomic>
 #include <cctype>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -38,6 +40,7 @@ std::atomic<bool> g_stop{false};
 std::mutex g_headMutex;
 float g_headQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
 ULONGLONG g_headTick = 0;
+std::atomic<float> g_ipd{0.063f}; // écart entre les yeux mesuré par le casque (mètres)
 
 // --- Chien de garde : signale un appel bloquant qui ne rend pas la main -------------
 
@@ -187,11 +190,11 @@ private:
     bool WaitForSystem();
     bool CreateDevice();
     bool CreateSession();
-    bool EnsureSwapchain(UINT w, UINT h);
-    void DestroySwapchain();
+    bool EnsureSwapchains(UINT w, UINT h);
+    void DestroySwapchains();
     void PollEvents();
     void RenderFrame();
-    bool CopyGameFrame();
+    bool CopyGameFrame(int eye);
     void Shutdown();
 
     XrInstance instance_ = XR_NULL_HANDLE;
@@ -207,14 +210,20 @@ private:
     ID3D11Device* device_ = nullptr;
     ID3D11DeviceContext* context_ = nullptr;
 
-    XrSwapchain swapchain_ = XR_NULL_HANDLE;
-    std::vector<XrSwapchainImageD3D11KHR> images_;
+    // Une cible par œil. Hors relief, tout passe par la première (écran virtuel, ou même
+    // image pour les deux yeux).
+    struct EyeTarget {
+        XrSwapchain swapchain = XR_NULL_HANDLE;
+        std::vector<XrSwapchainImageD3D11KHR> images;
+        bool hasContent = false; // au moins une image du jeu a été copiée dans la swapchain
+        ULONGLONG copiedTick = 0;
+        render::CpuFrame frame;  // dernière image du jeu reçue pour cet œil, avec sa vue
+    };
+    EyeTarget eyes_[2];
     int64_t format_ = 0;
     UINT scWidth_ = 0;
     UINT scHeight_ = 0;
-    bool hasContent_ = false; // au moins une image du jeu a été copiée dans la swapchain
 
-    render::CpuFrame frame_; // dernière image du jeu reçue
     MenuInput input_;        // manettes -> touches des menus
 
     unsigned long long framesSubmitted_ = 0;
@@ -223,7 +232,52 @@ private:
     unsigned long long copiedAtStats_ = 0;
     ULONGLONG lastStats_ = 0;
     int statsLogged_ = 0;
+
+    // Réglages [Display] de sr2_vr.ini, relus chaque seconde
+    void ReadConfig();
+    int displayMode_ = 0;     // 0 écran virtuel, 1 immersif (même image aux deux yeux), 2 relief
+    float fovScale_ = 1.0f;   // correction du champ de vue annoncé au casque
+    ULONGLONG lastConfig_ = 0;
+    int shownMode_ = -1;      // dernier affichage réellement utilisé (pour le log)
+    ULONGLONG lastModeLog_ = 0;
+    unsigned modeChanges_ = 0; // changements d'affichage depuis le dernier log
+    unsigned shownCount_[3]{}; // images du casque par affichage (écran, immersif, relief) depuis le relevé
+
+    // Écran virtuel : replacé devant la tête quand il réapparaît (sortie du jeu vers un menu)
+    XrPosef headPose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f}};
+    bool headPoseValid_ = false;
+    XrPosef screenPose_{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, -kScreenDistance}};
+    ULONGLONG screenShownTick_ = 0;
+    void PlaceScreen();
 };
+
+void XrApp::ReadConfig()
+{
+    displayMode_ = config::Int("Display", "mode", 0);
+    fovScale_ = config::Float("Display", "fov_scale", 1.0f);
+    if (!(fovScale_ > 0.2f && fovScale_ < 5.0f))
+        fovScale_ = 1.0f;
+}
+
+// Écran virtuel à kScreenDistance devant la tête, à sa hauteur, face à elle, vertical
+void XrApp::PlaceScreen()
+{
+    if (!headPoseValid_)
+        return;
+    const XrQuaternionf& q = headPose_.orientation;
+    // Avant de la tête (-z tourné), projeté à l'horizontale
+    float fx = -2.0f * (q.x * q.z + q.y * q.w);
+    float fz = -(1.0f - 2.0f * (q.x * q.x + q.y * q.y));
+    const float length = std::sqrt(fx * fx + fz * fz);
+    if (length < 0.1f)
+        return; // tête à la verticale : on garde la place précédente
+    fx /= length;
+    fz /= length;
+    const float yaw = std::atan2(-fx, -fz); // rotation autour de +y qui amène -z sur cet avant
+    screenPose_.orientation = {0.0f, std::sin(yaw * 0.5f), 0.0f, std::cos(yaw * 0.5f)};
+    screenPose_.position = {headPose_.position.x + fx * kScreenDistance, headPose_.position.y,
+                            headPose_.position.z + fz * kScreenDistance};
+}
 
 bool XrApp::Check(XrResult r, const char* what)
 {
@@ -410,11 +464,11 @@ bool XrApp::CreateSession()
     return true;
 }
 
-bool XrApp::EnsureSwapchain(UINT w, UINT h)
+bool XrApp::EnsureSwapchains(UINT w, UINT h)
 {
-    if (swapchain_ != XR_NULL_HANDLE && w == scWidth_ && h == scHeight_)
+    if (eyes_[0].swapchain != XR_NULL_HANDLE && w == scWidth_ && h == scHeight_)
         return true;
-    DestroySwapchain();
+    DestroySwapchains();
 
     XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
     ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
@@ -425,27 +479,33 @@ bool XrApp::EnsureSwapchain(UINT w, UINT h)
     ci.faceCount = 1;
     ci.arraySize = 1;
     ci.mipCount = 1;
-    if (!Check(xrCreateSwapchain(session_, &ci, &swapchain_), "xrCreateSwapchain"))
-        return false;
-
     uint32_t count = 0;
-    xrEnumerateSwapchainImages(swapchain_, 0, &count, nullptr);
-    images_.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
-    xrEnumerateSwapchainImages(swapchain_, count, &count, reinterpret_cast<XrSwapchainImageBaseHeader*>(images_.data()));
+    for (EyeTarget& eye : eyes_) {
+        if (!Check(xrCreateSwapchain(session_, &ci, &eye.swapchain), "xrCreateSwapchain")) {
+            DestroySwapchains();
+            return false;
+        }
+        xrEnumerateSwapchainImages(eye.swapchain, 0, &count, nullptr);
+        eye.images.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        xrEnumerateSwapchainImages(eye.swapchain, count, &count,
+                                   reinterpret_cast<XrSwapchainImageBaseHeader*>(eye.images.data()));
+    }
     scWidth_ = w;
     scHeight_ = h;
-    LOG_XR("swapchain %ux%u creee (%u images)", w, h, count);
+    LOG_XR("2 swapchains %ux%u creees (%u images chacune)", w, h, count);
     return true;
 }
 
-void XrApp::DestroySwapchain()
+void XrApp::DestroySwapchains()
 {
-    if (swapchain_ != XR_NULL_HANDLE)
-        xrDestroySwapchain(swapchain_);
-    swapchain_ = XR_NULL_HANDLE;
-    images_.clear();
+    for (EyeTarget& eye : eyes_) {
+        if (eye.swapchain != XR_NULL_HANDLE)
+            xrDestroySwapchain(eye.swapchain);
+        eye.swapchain = XR_NULL_HANDLE;
+        eye.images.clear();
+        eye.hasContent = false;
+    }
     scWidth_ = scHeight_ = 0;
-    hasContent_ = false;
 }
 
 void XrApp::PollEvents()
@@ -483,10 +543,12 @@ void XrApp::PollEvents()
     }
 }
 
-// Envoie la dernière image du jeu dans la swapchain. true si une nouvelle image a été copiée.
-bool XrApp::CopyGameFrame()
+// Envoie la dernière image du jeu rendue pour cet œil dans sa swapchain. true si une
+// nouvelle image a été copiée.
+bool XrApp::CopyGameFrame(int eyeIndex)
 {
-    if (!render::TakeLatestFrame(frame_) || !EnsureSwapchain(frame_.width, frame_.height))
+    EyeTarget& eye = eyes_[eyeIndex];
+    if (!render::TakeLatestFrame(eyeIndex, eye.frame) || !EnsureSwapchains(eye.frame.width, eye.frame.height))
         return false;
 
     bool copied = false;
@@ -497,20 +559,25 @@ bool XrApp::CopyGameFrame()
     bool acquired = false;
     {
         Phase p("xrAcquireSwapchainImage");
-        acquired = Check(xrAcquireSwapchainImage(swapchain_, &ai, &index), "xrAcquireSwapchainImage");
+        acquired = Check(xrAcquireSwapchainImage(eye.swapchain, &ai, &index), "xrAcquireSwapchainImage");
     }
     if (acquired) {
         {
             Phase p("xrWaitSwapchainImage");
-            acquired = Check(xrWaitSwapchainImage(swapchain_, &wi), "xrWaitSwapchainImage");
+            acquired = Check(xrWaitSwapchainImage(eye.swapchain, &wi), "xrWaitSwapchainImage");
         }
         if (acquired) {
-            context_->UpdateSubresource(images_[index].texture, 0, nullptr, frame_.pixels.data(), frame_.width * 4, 0);
+            context_->UpdateSubresource(eye.images[index].texture, 0, nullptr, eye.frame.pixels.data(),
+                                        eye.frame.width * 4, 0);
             copied = true;
         }
         XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
         Phase p("xrReleaseSwapchainImage");
-        xrReleaseSwapchainImage(swapchain_, &ri);
+        xrReleaseSwapchainImage(eye.swapchain, &ri);
+    }
+    if (copied) {
+        eye.hasContent = true;
+        eye.copiedTick = GetTickCount64();
     }
     return copied;
 }
@@ -537,6 +604,9 @@ void XrApp::RenderFrame()
     const bool located = fs.shouldRender &&
                          XR_SUCCEEDED(xrLocateSpace(viewSpace_, localSpace_, fs.predictedDisplayTime, &head)) &&
                          (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+    headPoseValid_ = located && (head.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT);
+    if (headPoseValid_)
+        headPose_ = head.pose;
     {
         std::lock_guard lock(g_headMutex);
         if (located) {
@@ -552,25 +622,108 @@ void XrApp::RenderFrame()
 
     input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED);
 
+    const ULONGLONG tick = GetTickCount64();
+    if (tick - lastConfig_ >= 1000) {
+        lastConfig_ = tick;
+        ReadConfig();
+    }
+
+    // Position des yeux à l'instant d'affichage : sert aux calques de projection, et l'écart
+    // entre les yeux au décalage de la caméra du jeu en relief
+    XrView views[2]{{XR_TYPE_VIEW}, {XR_TYPE_VIEW}};
+    bool viewsLocated = false;
     if (fs.shouldRender) {
-        if (CopyGameFrame()) {
-            hasContent_ = true;
-            ++framesCopied_;
+        XrViewLocateInfo li{XR_TYPE_VIEW_LOCATE_INFO};
+        li.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+        li.displayTime = fs.predictedDisplayTime;
+        li.space = localSpace_;
+        XrViewState viewState{XR_TYPE_VIEW_STATE};
+        uint32_t viewCount = 0;
+        viewsLocated = XR_SUCCEEDED(xrLocateViews(session_, &li, &viewState, 2, &viewCount, views)) && viewCount == 2;
+        if (viewsLocated) {
+            const float dx = views[1].pose.position.x - views[0].pose.position.x;
+            const float dy = views[1].pose.position.y - views[0].pose.position.y;
+            const float dz = views[1].pose.position.z - views[0].pose.position.z;
+            const float ipd = std::sqrt(dx * dx + dy * dy + dz * dz);
+            if (ipd > 0.04f && ipd < 0.09f)
+                g_ipd = ipd;
         }
+
+        for (int eye = 0; eye < 2; ++eye)
+            if (CopyGameFrame(eye))
+                ++framesCopied_;
         // Image suivante : capturée par le jeu à son prochain Present
         render::RequestFrame();
     }
 
     XrCompositionLayerQuad quad{XR_TYPE_COMPOSITION_LAYER_QUAD};
+    XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView projected[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+                                                  {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     const XrCompositionLayerBaseHeader* layers[1]{};
     uint32_t layerCount = 0;
-    if (fs.shouldRender && hasContent_) {
+
+    // Affichage : 2 = relief (une image par œil, rendue avec la caméra décalée), 1 = immersif
+    // (la même image pour les deux yeux), 0 = écran virtuel. Les images de projection portent
+    // l'orientation de tête qui a servi à les rendre et leur champ de vue : le compositeur les
+    // recale sur la tête à chaque image du casque. Sans caméra de jeu (menu principal), ou tant
+    // qu'un œil n'a pas d'image récente, on retombe sur le mode inférieur.
+    const ULONGLONG nowTick = GetTickCount64(); // après les copies : jamais avant leur horodatage
+    const auto usable = [&](const EyeTarget& eye, int wantedEye) {
+        return eye.hasContent && eye.frame.view.valid && eye.frame.view.eye == wantedEye &&
+               eye.frame.view.hfovDeg > 1.0f && nowTick - eye.copiedTick < 500;
+    };
+    int shown = 0;
+    if (fs.shouldRender && viewsLocated && displayMode_ == 2 && usable(eyes_[0], 0) && usable(eyes_[1], 1))
+        shown = 2;
+    else if (fs.shouldRender && viewsLocated && displayMode_ >= 1 && usable(eyes_[0], 0))
+        shown = 1;
+
+    if (shown) {
+        float halfH = 0.0f, halfV = 0.0f;
+        for (int i = 0; i < 2; ++i) {
+            const EyeTarget& source = eyes_[shown == 2 ? i : 0];
+            halfH = std::atan(std::tan(source.frame.view.hfovDeg * 0.5f * 0.01745329f) * fovScale_);
+            halfV = std::atan(std::tan(halfH) * static_cast<float>(scHeight_) / static_cast<float>(scWidth_));
+            projected[i].pose.position = views[i].pose.position;
+            projected[i].pose.orientation = {source.frame.view.headQuat[0], source.frame.view.headQuat[1],
+                                             source.frame.view.headQuat[2], source.frame.view.headQuat[3]};
+            projected[i].fov = {-halfH, halfH, halfV, -halfV};
+            projected[i].subImage.swapchain = source.swapchain;
+            projected[i].subImage.imageRect = {{0, 0}, {static_cast<int32_t>(scWidth_), static_cast<int32_t>(scHeight_)}};
+        }
+        projection.space = localSpace_;
+        projection.viewCount = 2;
+        projection.views = projected;
+        layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&projection);
+        if (shownMode_ != shown && ++modeChanges_ && tick - lastModeLog_ >= 2000) {
+            LOG_XR("affichage %s : champ de vue annonce %.1f x %.1f degres (echelle %.2f), ecart des yeux %.1f mm, "
+                   "%u changement(s) d'affichage",
+                   shown == 2 ? "en relief" : "immersif sans relief", halfH * 114.59156f, halfV * 114.59156f, fovScale_,
+                   g_ipd.load() * 1000.0f, modeChanges_);
+            lastModeLog_ = tick;
+            modeChanges_ = 0;
+        }
+        shownMode_ = shown;
+        ++shownCount_[shown];
+    } else if (fs.shouldRender && eyes_[0].hasContent) {
+        // L'écran revient après une vue immersive (ou pour la première fois) : devant la tête
+        if (!screenShownTick_ || nowTick - screenShownTick_ > 500)
+            PlaceScreen();
+        screenShownTick_ = nowTick;
+        ++shownCount_[0];
+        if (shownMode_ != 0 && ++modeChanges_ && tick - lastModeLog_ >= 2000) {
+            LOG_XR("affichage : ecran virtuel%s, %u changement(s) d'affichage",
+                   displayMode_ >= 1 ? " (pas de camera de jeu pour cette image)" : "", modeChanges_);
+            lastModeLog_ = tick;
+            modeChanges_ = 0;
+        }
+        shownMode_ = 0;
         quad.space = localSpace_;
         quad.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
-        quad.subImage.swapchain = swapchain_;
+        quad.subImage.swapchain = eyes_[0].swapchain;
         quad.subImage.imageRect = {{0, 0}, {static_cast<int32_t>(scWidth_), static_cast<int32_t>(scHeight_)}};
-        quad.pose.orientation.w = 1.0f;
-        quad.pose.position = {0.0f, 0.0f, -kScreenDistance};
+        quad.pose = screenPose_;
         quad.size = {kScreenWidth, kScreenWidth * static_cast<float>(scHeight_) / static_cast<float>(scWidth_)};
         layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&quad);
     }
@@ -608,6 +761,10 @@ void XrApp::RenderFrame()
                    static_cast<double>(framesSubmitted_ - submittedAtStats_) / seconds,
                    static_cast<double>(framesCopied_ - copiedAtStats_) / seconds, captureMs, StateName(state_),
                    input::TakeSentCount());
+        if (statsLogged_ < 30 || statsLogged_ % 6 == 0)
+            LOG_XR("  affichage sur ces images : %u ecran virtuel, %u immersif, %u relief", shownCount_[0],
+                   shownCount_[1], shownCount_[2]);
+        shownCount_[0] = shownCount_[1] = shownCount_[2] = 0;
         ++statsLogged_;
         submittedAtStats_ = framesSubmitted_;
         copiedAtStats_ = framesCopied_;
@@ -618,7 +775,7 @@ void XrApp::RenderFrame()
 void XrApp::Shutdown()
 {
     input_.ReleaseAll();
-    DestroySwapchain();
+    DestroySwapchains();
     if (viewSpace_ != XR_NULL_HANDLE)
         xrDestroySpace(viewSpace_);
     viewSpace_ = XR_NULL_HANDLE;
@@ -694,27 +851,14 @@ void RequestStop()
     g_stop = true;
 }
 
-bool GetHeadRotation(float out[9])
+bool GetHeadPose(float quat[4], float* ipd)
 {
-    float x, y, z, w;
-    {
-        std::lock_guard lock(g_headMutex);
-        if (!g_headTick || GetTickCount64() - g_headTick > 500)
-            return false;
-        x = g_headQuat[0];
-        y = g_headQuat[1];
-        z = g_headQuat[2];
-        w = g_headQuat[3];
-    }
-    out[0] = 1.0f - 2.0f * (y * y + z * z);
-    out[1] = 2.0f * (x * y - z * w);
-    out[2] = 2.0f * (x * z + y * w);
-    out[3] = 2.0f * (x * y + z * w);
-    out[4] = 1.0f - 2.0f * (x * x + z * z);
-    out[5] = 2.0f * (y * z - x * w);
-    out[6] = 2.0f * (x * z - y * w);
-    out[7] = 2.0f * (y * z + x * w);
-    out[8] = 1.0f - 2.0f * (x * x + y * y);
+    if (ipd)
+        *ipd = g_ipd;
+    std::lock_guard lock(g_headMutex);
+    if (!g_headTick || GetTickCount64() - g_headTick > 500)
+        return false;
+    memcpy(quat, g_headQuat, sizeof(g_headQuat));
     return true;
 }
 

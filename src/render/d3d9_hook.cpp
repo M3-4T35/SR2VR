@@ -10,6 +10,7 @@
 // image) et on copie le back buffer pour le casque (render/frame_capture), sans rien
 // modifier au rendu du jeu.
 #include "render/d3d9_hook.h"
+#include "engine/camera_hook.h"
 #include "render/frame_capture.h"
 #include "util/hook.h"
 #include "util/log.h"
@@ -27,6 +28,11 @@ namespace {
 // Index dans les vtables (ordre des méthodes dans d3d9.h)
 constexpr int kDeviceReset = 16;
 constexpr int kDevicePresent = 17;
+constexpr int kDeviceCreateTexture = 23;
+constexpr int kDeviceCreateVolumeTexture = 24;
+constexpr int kDeviceCreateCubeTexture = 25;
+constexpr int kDeviceCreateVertexBuffer = 26;
+constexpr int kDeviceCreateIndexBuffer = 27;
 constexpr int kDeviceSetRenderTarget = 37;
 constexpr int kDeviceBeginScene = 41;
 constexpr int kDeviceEndScene = 42;
@@ -52,7 +58,39 @@ using PresentExFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9Ex*, const RECT*
                                                  const RGNDATA*, DWORD);
 using ResetExFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9Ex*, D3DPRESENT_PARAMETERS*, D3DDISPLAYMODEEX*);
 
+using CreateTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                     IDirect3DTexture9**, HANDLE*);
+using CreateVolumeTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, UINT, UINT, DWORD, D3DFORMAT,
+                                                           D3DPOOL, IDirect3DVolumeTexture9**, HANDLE*);
+using CreateCubeTextureFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                         IDirect3DCubeTexture9**, HANDLE*);
+using CreateVertexBufferFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, DWORD, DWORD, D3DPOOL,
+                                                          IDirect3DVertexBuffer9**, HANDLE*);
+using CreateIndexBufferFn = HRESULT(STDMETHODCALLTYPE*)(IDirect3DDevice9*, UINT, DWORD, D3DFORMAT, D3DPOOL,
+                                                         IDirect3DIndexBuffer9**, HANDLE*);
+
 DevicePresentFn g_devicePresent[kVariants]{};
+CreateTextureFn g_createTexture[kVariants]{};
+CreateVolumeTextureFn g_createVolumeTexture[kVariants]{};
+CreateCubeTextureFn g_createCubeTexture[kVariants]{};
+CreateVertexBufferFn g_createVertexBuffer[kVariants]{};
+CreateIndexBufferFn g_createIndexBuffer[kVariants]{};
+
+// Ressources créées par le jeu depuis l'injection, par sorte et par pool (0 DEFAULT,
+// 1 MANAGED, 2 SYSTEMMEM, 3 SCRATCH). Sert à savoir si le jeu survivrait à un device D3D9Ex,
+// qui refuse le pool MANAGED mais permettrait de partager l'image avec D3D11 sans copie.
+enum { kTextures, kVolumes, kCubes, kVertexBuffers, kIndexBuffers, kResourceKinds };
+std::atomic<unsigned> g_created[kResourceKinds][4]{};
+std::atomic<unsigned> g_createdTotal{0};
+unsigned g_createdAtLastLog = 0;
+
+void CountResource(int kind, D3DPOOL pool)
+{
+    if (static_cast<unsigned>(pool) < 4) {
+        ++g_created[kind][pool];
+        ++g_createdTotal;
+    }
+}
 DeviceResetFn g_deviceReset[kVariants]{};
 SetRenderTargetFn g_setRenderTarget[kVariants]{};
 SceneFn g_beginScene[kVariants]{};
@@ -164,8 +202,11 @@ void LogDeviceInfo(IDirect3DDevice9* device)
 
 void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
 {
-    // Le back buffer contient encore l'image finie : copie pour le casque si demandée
-    CaptureFrame(device);
+    // Le back buffer contient encore l'image finie : copie pour le casque si demandée, avec
+    // la vue (orientation de tête, champ de vue) qui a servi à la rendre
+    FrameView view;
+    view.valid = engine::TakeFrameView(view.headQuat, &view.eye, &view.hfovDeg);
+    CaptureFrame(device, view);
 
     const unsigned long long n = ++g_frames;
     const ULONGLONG now = GetTickCount64();
@@ -196,6 +237,19 @@ void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
             LOG_RENDER("images : %llu au total, %.1f par seconde ; par image : %.1f BeginScene, %.1f EndScene, "
                        "%.1f Clear, %.1f SetRenderTarget",
                        n, fps, begins / frames, ends / frames, clears / frames, targets / frames);
+        const unsigned created = g_createdTotal;
+        if (created != g_createdAtLastLog) {
+            g_createdAtLastLog = created;
+            static const char* const kNames[kResourceKinds] = {"textures", "textures 3D", "cubes", "tampons de sommets",
+                                                               "tampons d'indices"};
+            for (int kind = 0; kind < kResourceKinds; ++kind) {
+                const unsigned d = g_created[kind][0], m = g_created[kind][1], s = g_created[kind][2],
+                               x = g_created[kind][3];
+                if (d + m + s + x)
+                    LOG_RENDER("  crees depuis l'injection, %-18s : %u DEFAULT, %u MANAGED, %u SYSTEMMEM, %u SCRATCH",
+                               kNames[kind], d, m, s, x);
+            }
+        }
         ++g_statsLogged;
         g_lastStatsTick = now;
         g_framesAtLastStats = n;
@@ -268,6 +322,48 @@ HRESULT STDMETHODCALLTYPE HkClear(IDirect3DDevice9* self, DWORD count, const D3D
 }
 
 template <int V>
+HRESULT STDMETHODCALLTYPE HkCreateTexture(IDirect3DDevice9* self, UINT w, UINT h, UINT levels, DWORD usage,
+                                          D3DFORMAT format, D3DPOOL pool, IDirect3DTexture9** out, HANDLE* shared)
+{
+    CountResource(kTextures, pool);
+    return g_createTexture[V](self, w, h, levels, usage, format, pool, out, shared);
+}
+
+template <int V>
+HRESULT STDMETHODCALLTYPE HkCreateVolumeTexture(IDirect3DDevice9* self, UINT w, UINT h, UINT d, UINT levels, DWORD usage,
+                                                D3DFORMAT format, D3DPOOL pool, IDirect3DVolumeTexture9** out,
+                                                HANDLE* shared)
+{
+    CountResource(kVolumes, pool);
+    return g_createVolumeTexture[V](self, w, h, d, levels, usage, format, pool, out, shared);
+}
+
+template <int V>
+HRESULT STDMETHODCALLTYPE HkCreateCubeTexture(IDirect3DDevice9* self, UINT edge, UINT levels, DWORD usage,
+                                              D3DFORMAT format, D3DPOOL pool, IDirect3DCubeTexture9** out,
+                                              HANDLE* shared)
+{
+    CountResource(kCubes, pool);
+    return g_createCubeTexture[V](self, edge, levels, usage, format, pool, out, shared);
+}
+
+template <int V>
+HRESULT STDMETHODCALLTYPE HkCreateVertexBuffer(IDirect3DDevice9* self, UINT length, DWORD usage, DWORD fvf, D3DPOOL pool,
+                                               IDirect3DVertexBuffer9** out, HANDLE* shared)
+{
+    CountResource(kVertexBuffers, pool);
+    return g_createVertexBuffer[V](self, length, usage, fvf, pool, out, shared);
+}
+
+template <int V>
+HRESULT STDMETHODCALLTYPE HkCreateIndexBuffer(IDirect3DDevice9* self, UINT length, DWORD usage, D3DFORMAT format,
+                                              D3DPOOL pool, IDirect3DIndexBuffer9** out, HANDLE* shared)
+{
+    CountResource(kIndexBuffers, pool);
+    return g_createIndexBuffer[V](self, length, usage, format, pool, out, shared);
+}
+
+template <int V>
 HRESULT STDMETHODCALLTYPE HkDeviceReset(IDirect3DDevice9* self, D3DPRESENT_PARAMETERS* pp)
 {
     LOG_RENDER("Reset (%s) demande par %s, thread %lu", kVariantName[V], hook::Describe(_ReturnAddress()).c_str(),
@@ -337,6 +433,16 @@ int HookDevice(IDirect3DDevice9* device)
     ok += Hook(device, kDeviceClear, &HkClear<V>, &g_clear[V], "IDirect3DDevice9::Clear");
     ok += Hook(device, kDeviceSetRenderTarget, &HkSetRenderTarget<V>, &g_setRenderTarget[V],
                "IDirect3DDevice9::SetRenderTarget");
+    ok += Hook(device, kDeviceCreateTexture, &HkCreateTexture<V>, &g_createTexture[V],
+               "IDirect3DDevice9::CreateTexture");
+    ok += Hook(device, kDeviceCreateVolumeTexture, &HkCreateVolumeTexture<V>, &g_createVolumeTexture[V],
+               "IDirect3DDevice9::CreateVolumeTexture");
+    ok += Hook(device, kDeviceCreateCubeTexture, &HkCreateCubeTexture<V>, &g_createCubeTexture[V],
+               "IDirect3DDevice9::CreateCubeTexture");
+    ok += Hook(device, kDeviceCreateVertexBuffer, &HkCreateVertexBuffer<V>, &g_createVertexBuffer[V],
+               "IDirect3DDevice9::CreateVertexBuffer");
+    ok += Hook(device, kDeviceCreateIndexBuffer, &HkCreateIndexBuffer<V>, &g_createIndexBuffer[V],
+               "IDirect3DDevice9::CreateIndexBuffer");
 
     IDirect3DSwapChain9* sc = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &sc)) && sc) {

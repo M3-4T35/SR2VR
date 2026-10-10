@@ -2,8 +2,10 @@
 // Manettes VR dans les menus : les menus de Saints Row 2 se pilotent au clavier (pas à la
 // souris), les manettes envoient donc des touches.
 //   stick (gauche ou droit)          -> flèches, avec répétition tant qu'il est tenu
-//   A, ou gâchette droite            -> Entrée
+//   A                                -> Entrée
 //   B, ou bouton menu de la gauche   -> Échap
+//   gâchette gauche                  -> Ctrl (tenue)
+//   gâchette droite                  -> Maj (tenue)
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 #include <windows.h>
@@ -34,12 +36,16 @@ private:
     XrAction navigate_ = XR_NULL_HANDLE;
     XrAction confirm_ = XR_NULL_HANDLE;
     XrAction back_ = XR_NULL_HANDLE;
+    XrAction leftTrigger_ = XR_NULL_HANDLE;
+    XrAction rightTrigger_ = XR_NULL_HANDLE;
     bool ready_ = false;
     bool announced_ = false;
     int direction_ = -1; // 0 haut, 1 bas, 2 gauche, 3 droite, -1 neutre
     Key arrows_[4];
     Key enter_;
     Key escape_;
+    Key control_;
+    Key shift_;
 };
 
 } // namespace xr

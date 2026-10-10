@@ -24,7 +24,7 @@ XrPath ToPath(XrInstance instance, const char* text)
 }
 
 struct Binding {
-    int action; // 0 naviguer, 1 valider, 2 retour
+    int action; // 0 naviguer, 1 valider, 2 retour, 3 gâchette gauche, 4 gâchette droite
     const char* path;
 };
 
@@ -40,28 +40,34 @@ const Profile kProfiles[] = {
      {{0, "/user/hand/left/input/thumbstick"},
       {0, "/user/hand/right/input/thumbstick"},
       {1, "/user/hand/right/input/a/click"},
-      {1, "/user/hand/right/input/trigger/value"},
       {2, "/user/hand/right/input/b/click"},
-      {2, "/user/hand/left/input/menu/click"}}},
+      {2, "/user/hand/left/input/menu/click"},
+      {3, "/user/hand/left/input/trigger/value"},
+      {4, "/user/hand/right/input/trigger/value"}}},
     {"/interaction_profiles/valve/index_controller",
      {{0, "/user/hand/left/input/thumbstick"},
       {0, "/user/hand/right/input/thumbstick"},
       {1, "/user/hand/right/input/a/click"},
-      {1, "/user/hand/right/input/trigger/click"},
       {2, "/user/hand/right/input/b/click"},
-      {2, "/user/hand/left/input/b/click"}}},
+      {2, "/user/hand/left/input/b/click"},
+      {3, "/user/hand/left/input/trigger/value"},
+      {4, "/user/hand/right/input/trigger/value"}}},
     {"/interaction_profiles/microsoft/motion_controller",
      {{0, "/user/hand/left/input/thumbstick"},
       {0, "/user/hand/right/input/thumbstick"},
-      {1, "/user/hand/right/input/trigger/value"},
+      {1, "/user/hand/right/input/trackpad/click"},
       {2, "/user/hand/left/input/menu/click"},
-      {2, "/user/hand/right/input/menu/click"}}},
+      {2, "/user/hand/right/input/menu/click"},
+      {3, "/user/hand/left/input/trigger/value"},
+      {4, "/user/hand/right/input/trigger/value"}}},
     {"/interaction_profiles/htc/vive_controller",
      {{0, "/user/hand/left/input/trackpad"},
       {0, "/user/hand/right/input/trackpad"},
-      {1, "/user/hand/right/input/trigger/click"},
+      {1, "/user/hand/right/input/trackpad/click"},
       {2, "/user/hand/left/input/menu/click"},
-      {2, "/user/hand/right/input/menu/click"}}},
+      {2, "/user/hand/right/input/menu/click"},
+      {3, "/user/hand/left/input/trigger/value"},
+      {4, "/user/hand/right/input/trigger/value"}}},
     {"/interaction_profiles/khr/simple_controller",
      {{1, "/user/hand/left/input/select/click"},
       {1, "/user/hand/right/input/select/click"},
@@ -88,6 +94,8 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
     arrows_[3].vk = VK_RIGHT;
     enter_.vk = VK_RETURN;
     escape_.vk = VK_ESCAPE;
+    control_.vk = VK_LCONTROL;
+    shift_.vk = VK_LSHIFT;
 
     XrActionSetCreateInfo si{XR_TYPE_ACTION_SET_CREATE_INFO};
     strcpy_s(si.actionSetName, "menus");
@@ -95,12 +103,14 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
     if (XR_FAILED(xrCreateActionSet(instance, &si, &set_)) ||
         !CreateAction(set_, XR_ACTION_TYPE_VECTOR2F_INPUT, "navigate", "Naviguer (fleches)", &navigate_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "confirm", "Valider (Entree)", &confirm_) ||
-        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "back", "Retour (Echap)", &back_)) {
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "back", "Retour (Echap)", &back_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_trigger", "Ctrl", &leftTrigger_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_trigger", "Maj", &rightTrigger_)) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
         return false;
     }
 
-    const XrAction actions[3] = {navigate_, confirm_, back_};
+    const XrAction actions[5] = {navigate_, confirm_, back_, leftTrigger_, rightTrigger_};
     int accepted = 0;
     for (const Profile& profile : kProfiles) {
         std::vector<XrActionSuggestedBinding> suggested;
@@ -125,7 +135,8 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         return false;
     }
     ready_ = true;
-    LOG_XR("manettes : %d profil(s) acceptes ; stick = fleches, A ou gachette droite = Entree, B ou menu gauche = Echap",
+    LOG_XR("manettes : %d profil(s) acceptes ; stick = fleches, A = Entree, B ou menu gauche = Echap, "
+           "gachette gauche = Ctrl, gachette droite = Maj",
            accepted);
     return true;
 }
@@ -157,6 +168,8 @@ void MenuInput::ReleaseAll()
         SetKey(key, false, false);
     SetKey(enter_, false, false);
     SetKey(escape_, false, false);
+    SetKey(control_, false, false);
+    SetKey(shift_, false, false);
     direction_ = -1;
 }
 
@@ -178,6 +191,15 @@ void MenuInput::Update(XrSession session, bool focused)
     }
 
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
+    const auto pressed = [&](XrAction action) {
+        XrActionStateBoolean button{XR_TYPE_ACTION_STATE_BOOLEAN};
+        gi.action = action;
+        return XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &button)) && button.isActive && button.currentState;
+    };
+    // Modificateurs d'abord : ils doivent être enfoncés avant la touche qu'ils accompagnent
+    SetKey(control_, pressed(leftTrigger_), false);
+    SetKey(shift_, pressed(rightTrigger_), false);
+
     gi.action = navigate_;
     XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};
     float x = 0.0f, y = 0.0f;
@@ -201,16 +223,8 @@ void MenuInput::Update(XrSession session, bool focused)
     for (int i = 0; i < 4; ++i)
         SetKey(arrows_[i], i == direction_, true);
 
-    XrActionStateBoolean button{XR_TYPE_ACTION_STATE_BOOLEAN};
-    gi.action = confirm_;
-    const bool confirm =
-        XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &button)) && button.isActive && button.currentState;
-    SetKey(enter_, confirm, false);
-    button = {XR_TYPE_ACTION_STATE_BOOLEAN};
-    gi.action = back_;
-    const bool back =
-        XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &button)) && button.isActive && button.currentState;
-    SetKey(escape_, back, false);
+    SetKey(enter_, pressed(confirm_), false);
+    SetKey(escape_, pressed(back_), false);
 }
 
 } // namespace xr

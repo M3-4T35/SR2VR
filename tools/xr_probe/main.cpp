@@ -22,6 +22,7 @@
 #include <vector>
 
 #include "render/frame_capture.h"
+#include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_session.h"
 
@@ -67,6 +68,7 @@ LONG WINAPI OnCrash(EXCEPTION_POINTERS* info)
 int RunChild(const std::string& name, int seconds)
 {
     vrlog::Init(GetModuleHandleA(nullptr), ("xr_probe_" + name + ".log").c_str());
+    config::Init(GetModuleHandleA(nullptr));
     SetUnhandledExceptionFilter(OnCrash);
     LOG_CORE("xr_probe %s, essai \"%s\", %u bits, %d s", SR2VR_VERSION, name.c_str(),
              static_cast<unsigned>(sizeof(void*) * 8), seconds);
@@ -123,7 +125,7 @@ int RunChild(const std::string& name, int seconds)
         device->Clear(1, &square, D3DCLEAR_TARGET, D3DCOLOR_XRGB(200, 40, 40), 1.0f, 0);
         device->BeginScene();
         device->EndScene();
-        render::CaptureFrame(device);
+        render::CaptureFrame(device, render::FrameView{});
         device->Present(nullptr, nullptr, nullptr, nullptr);
         ++frames;
         Sleep(8);

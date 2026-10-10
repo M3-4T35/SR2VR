@@ -69,7 +69,7 @@ bool SendKey(WORD vk, bool down)
     INPUT in{};
     in.type = INPUT_KEYBOARD;
     in.ki.wVk = vk;
-    in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC));
+    in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)); // gère aussi VK_LSHIFT / VK_LCONTROL
     in.ki.dwFlags = (IsExtended(vk) ? KEYEVENTF_EXTENDEDKEY : 0u) | (down ? 0u : KEYEVENTF_KEYUP);
     if (SendInput(1, &in, sizeof(in)) != 1)
         return false;

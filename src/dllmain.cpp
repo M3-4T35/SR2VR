@@ -13,6 +13,7 @@
 
 #include "engine/camera_hook.h"
 #include "render/d3d9_hook.h"
+#include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_session.h"
 
@@ -237,6 +238,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
     if (reason == DLL_PROCESS_ATTACH) {
         DisableThreadLibraryCalls(hModule);
         vrlog::Init(hModule);
+        config::Init(hModule);
         // Jamais de travail lourd dans DllMain (loader lock) : on délègue à un thread
         if (HANDLE t = CreateThread(nullptr, 0, InitThread, nullptr, 0, nullptr))
             CloseHandle(t);

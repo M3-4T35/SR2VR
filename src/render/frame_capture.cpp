@@ -24,7 +24,7 @@ CpuFrame g_work;
 
 // Partagé avec le thread XR
 std::mutex g_mutex;
-CpuFrame g_ready;
+CpuFrame g_ready[2]; // dernière capture de chaque œil
 uint64_t g_seq = 0;
 unsigned g_statCount = 0;
 double g_statMs = 0.0;
@@ -105,7 +105,7 @@ void RequestFrame()
     g_requested = true;
 }
 
-void CaptureFrame(IDirect3DDevice9* device)
+void CaptureFrame(IDirect3DDevice9* device, const FrameView& view)
 {
     if (!device || !g_requested.exchange(false))
         return;
@@ -138,6 +138,7 @@ void CaptureFrame(IDirect3DDevice9* device)
     g_work.pixels.resize(rowBytes * desc.Height);
     g_work.width = desc.Width;
     g_work.height = desc.Height;
+    g_work.view = view;
     const auto* src = static_cast<const uint8_t*>(locked.pBits);
     if (static_cast<size_t>(locked.Pitch) == rowBytes) {
         memcpy(g_work.pixels.data(), src, rowBytes * desc.Height);
@@ -150,19 +151,20 @@ void CaptureFrame(IDirect3DDevice9* device)
     const double elapsed = NowMs() - start;
     std::lock_guard lock(g_mutex);
     g_work.seq = ++g_seq;
-    std::swap(g_work, g_ready);
+    std::swap(g_work, g_ready[view.valid && view.eye == 1 ? 1 : 0]);
     ++g_statCount;
     g_statMs += elapsed;
 }
 
-bool TakeLatestFrame(CpuFrame& frame)
+bool TakeLatestFrame(int eye, CpuFrame& frame)
 {
     std::lock_guard lock(g_mutex);
-    if (g_ready.seq == 0 || g_ready.seq <= frame.seq)
+    CpuFrame& ready = g_ready[eye == 1 ? 1 : 0];
+    if (ready.seq == 0 || ready.seq <= frame.seq)
         return false;
     // L'ancienne image du thread XR revient au jeu : son numéro, plus petit, la désigne
     // comme périmée et son tampon sera réutilisé
-    std::swap(frame, g_ready);
+    std::swap(frame, ready);
     return true;
 }
 

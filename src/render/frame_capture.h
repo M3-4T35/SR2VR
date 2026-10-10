@@ -15,23 +15,35 @@ struct IDirect3DDevice9;
 
 namespace render {
 
+// Vue avec laquelle le jeu a rendu une image : orientation de la tête appliquée à la caméra
+// (quaternion OpenXR x, y, z, w dans l'espace LOCAL) et champ de vue horizontal de l'image.
+// valid = false : pas de caméra de jeu pour cette image (menu principal, chargement).
+struct FrameView {
+    bool valid = false;
+    int eye = 0; // 0 gauche (ou image commune aux deux yeux), 1 droit
+    float headQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float hfovDeg = 0.0f;
+};
+
 // Image BGRA 8 bits, lignes contiguës (pitch = largeur * 4)
 struct CpuFrame {
     std::vector<uint8_t> pixels;
     UINT width = 0;
     UINT height = 0;
     uint64_t seq = 0; // numéro de la capture
+    FrameView view;
 };
 
 // Thread XR : demande une image au prochain Present (au plus une par image du casque)
 void RequestFrame();
 
 // Thread du jeu : copie le back buffer si une image est demandée (avant le Present d'origine)
-void CaptureFrame(IDirect3DDevice9* device);
+void CaptureFrame(IDirect3DDevice9* device, const FrameView& view);
 
-// Thread XR : échange `frame` avec la dernière capture si elle est plus récente que la
-// sienne. true si `frame` contient une nouvelle image.
-bool TakeLatestFrame(CpuFrame& frame);
+// Thread XR : échange `frame` avec la dernière capture de cet œil si elle est plus récente
+// que la sienne. true si `frame` contient une nouvelle image. Les images sans vue (menus)
+// sont rangées avec l'œil 0.
+bool TakeLatestFrame(int eye, CpuFrame& frame);
 
 // Thread XR : nombre de captures et durée moyenne (ms) depuis le dernier appel
 void TakeCaptureStats(unsigned* count, double* averageMs);

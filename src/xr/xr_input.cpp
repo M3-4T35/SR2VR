@@ -26,6 +26,8 @@ constexpr ULONGLONG kGameplayTimeoutMs = 300;
 
 // Positions des touches (codes de balayage) : W, S, A, D et E d'un clavier QWERTY
 constexpr WORD kScanForward = 0x11, kScanBack = 0x1F, kScanLeft = 0x1E, kScanRight = 0x20, kScanInteract = 0x12;
+// Touches par défaut du jeu : Espace pour sauter, C pour s'accroupir (bascule)
+constexpr int kScanJump = 0x39, kScanCrouch = 0x2E;
 
 std::atomic<ULONGLONG> g_gameplayTick{0};
 
@@ -117,6 +119,19 @@ void MenuInput::ReadConfig()
     turnSpeed_ = config::Float("Controls", "turn_speed", 1200.0f);
     if (!(turnSpeed_ >= -20000.0f && turnSpeed_ <= 20000.0f))
         turnSpeed_ = 1200.0f;
+    // Touches du saut et de l'accroupissement, si elles ont été changées dans le jeu
+    const auto assign = [this](Key& key, const char* name, int fallback) {
+        int code = config::Int("Controls", name, fallback);
+        if (code < 1 || code > 0x7F)
+            code = fallback;
+        if (key.code != code) {
+            SetKey(key, false, false); // relâche l'ancienne touche avant d'en changer
+            key.code = static_cast<WORD>(code);
+        }
+        key.scan = true;
+    };
+    assign(jump_, "jump_scan", kScanJump);
+    assign(crouch_, "crouch_scan", kScanCrouch);
 }
 
 bool MenuInput::Init(XrInstance instance, XrSession session)
@@ -179,8 +194,9 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
     }
     ready_ = true;
     LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%.0f px/s), "
-           "poignee droite = E. Menus : sticks = fleches. A = Entree, B ou menu gauche = Echap, gachettes = Ctrl / Maj",
-           accepted, turnSpeed_);
+           "haut = sauter (position 0x%02X), bas = s'accroupir (position 0x%02X), poignee droite = E. Menus : sticks = "
+           "fleches. A = Entree, B ou menu gauche = Echap, gachettes = Ctrl / Maj",
+           accepted, turnSpeed_, jump_.code, crouch_.code);
     return true;
 }
 
@@ -219,6 +235,8 @@ void MenuInput::ReleaseAll()
     SetKey(control_, false, false);
     SetKey(shift_, false, false);
     SetKey(interact_, false, false);
+    SetKey(jump_, false, false);
+    SetKey(crouch_, false, false);
     direction_ = -1;
     turnRemainder_ = 0.0f;
 }
@@ -296,9 +314,17 @@ void MenuInput::Update(XrSession session, bool focused)
         for (int i = 0; i < 4; ++i)
             SetKey(move_[i], axis[i] > (move_[i].held ? kMoveRelease : kMoveEngage), false);
 
-        // Tourner : la souris se déplace à l'horizontale, proportionnellement au stick
+        // Sauter / s'accroupir : stick droit poussé franchement vers le haut ou le bas. Axe
+        // dominant à l'engagement, pour ne pas sauter en tournant ; la touche tient jusqu'au
+        // retour du stick vers le centre (le jeu accroupit par bascule : un appui suffit).
+        const bool vertical = std::fabs(ry) > std::fabs(rx);
+        SetKey(jump_, ry > (jump_.held ? kRelease : kEngage) && (jump_.held || vertical), false);
+        SetKey(crouch_, -ry > (crouch_.held ? kRelease : kEngage) && (crouch_.held || vertical), false);
+
+        // Tourner : la souris se déplace à l'horizontale, proportionnellement au stick. Pas
+        // pendant un saut ou un accroupissement commandé au stick, qui dévie toujours un peu.
         float turn = 0.0f;
-        if (std::fabs(rx) > kTurnDeadzone)
+        if (!jump_.held && !crouch_.held && std::fabs(rx) > kTurnDeadzone)
             turn = (rx - (rx > 0.0f ? kTurnDeadzone : -kTurnDeadzone)) / (1.0f - kTurnDeadzone);
         turnRemainder_ += turn * turnSpeed_ * dt;
         const int pixels = static_cast<int>(turnRemainder_);
@@ -315,6 +341,8 @@ void MenuInput::Update(XrSession session, bool focused)
         for (Key& key : move_)
             SetKey(key, false, false);
         SetKey(interact_, false, false);
+        SetKey(jump_, false, false);
+        SetKey(crouch_, false, false);
         turnRemainder_ = 0.0f;
 
         // Menus : le stick le plus incliné donne une flèche. Axe dominant ; la direction

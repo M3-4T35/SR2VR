@@ -6,8 +6,9 @@
 //   stick gauche                     -> déplacement (touches aux positions W A S D, donc
 //                                       Z Q S D sur un clavier AZERTY)
 //   stick droit, gauche / droite     -> tourner (mouvement horizontal de la souris)
+//   stick droit, haut / bas          -> sauter (Espace) / s'accroupir (C)
 //   poignée droite                   -> interagir (E)
-// Dans les menus (pause, menu principal) :
+// Dans les menus (pause, menu principal, garde-robe, garage, boutiques) :
 //   stick gauche ou droit            -> flèches, avec répétition tant qu'il est tenu
 // Partout :
 //   A                                -> Entrée
@@ -65,6 +66,8 @@ private:
     Key control_;
     Key shift_;
     Key interact_;
+    Key jump_;
+    Key crouch_;
 
     // Tourner : pixels de souris par seconde, stick à fond ([Controls] turn_speed)
     float turnSpeed_ = 1200.0f;

@@ -22,11 +22,12 @@
 // en file et ressort au Present de la même image : au Present de l'image N, la caméra de
 // l'image N+1 peut déjà avoir été préparée.
 //
-// Menus : on ne touche à rien, et l'image n'a pas de vue, donc elle s'affiche sur l'écran
-// virtuel. Deux cas : le jeu en pause (menu de pause et autres menus qui arrêtent le jeu), et
-// les interfaces qui laissent le jeu tourner (garde-robe, garage, boutiques, personnalisation
-// de la planque ou du gang), reconnues à un octet que leur fonction d'entrée commune met à 0
-// et leur fonction de sortie à 1.
+// Menus et cinématiques : on ne touche à rien, et l'image n'a pas de vue, donc elle s'affiche
+// sur l'écran virtuel. Trois cas : le jeu en pause (menu de pause et autres menus qui arrêtent
+// le jeu) ; les interfaces qui laissent le jeu tourner (garde-robe, garage, boutiques,
+// personnalisation de la planque ou du gang), reconnues à un octet que leur fonction d'entrée
+// commune met à 0 et leur fonction de sortie à 1 ; les cinématiques, reconnues à l'octet que
+// leur lancement met à 1 et leur fin à 0 (« IsInCutscene » dans les sources de Juiced).
 //
 // Aucune adresse codée en dur : fonctions trouvées par signature, adresses des variables lues
 // dans leur code.
@@ -71,6 +72,11 @@ constexpr char kUnpauseSig[] =
 // cmp eax,esi ; mov byte [jeu libre],0 ; mov [ebp+...],ecx. La fonction de sortie y remet 1.
 constexpr char kStoreEnterSig[] = "83 C9 FF 83 C4 04 3B C6 C6 05 ?? ?? ?? ?? 00 89 8D";
 constexpr int kFreePlayOffset = 10;     // opérande du « mov byte »
+// Lancement d'une cinématique : mov byte [...],0 ; fst [...] ; mov byte [cinématique],1 ;
+// fst [...] ; mov byte [...],0 ; fstp [...]
+constexpr char kCutsceneStartSig[] =
+    "C6 05 ?? ?? ?? ?? 00 D9 15 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 D9 15 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 D9 1D";
+constexpr int kCutsceneOffset = 15;     // opérande du deuxième « mov byte »
 constexpr int kRenderOrientOffset = 11; // opérande du « mov edi »
 constexpr int kGetFovCallOffset = 17;   // l'instruction call GetFOV
 constexpr int kRenderFovOffset = 29;    // opérande du « fstp »
@@ -95,10 +101,17 @@ bool Paused()
     return g_pauseCount && *g_pauseCount > 0;
 }
 
+const uint8_t* g_cutscene = nullptr; // 1 pendant une cinématique
+
 // Garde-robe, garage, boutique, personnalisation : le jeu tourne, mais c'est un menu
 bool InInterface()
 {
     return g_freePlay && *g_freePlay == 0;
+}
+
+bool InCutscene()
+{
+    return g_cutscene && *g_cutscene != 0;
 }
 
 // --- Simulation -----------------------------------------------------------------------
@@ -154,6 +167,7 @@ struct Settings {
     float ipdScale = 1.0f;     // correction de l'écart entre les yeux
     bool swapEyes = false;
     bool interfaceScreen = true; // magasins et interfaces de planque sur l'écran virtuel
+    bool cutsceneScreen = true;  // cinématiques sur l'écran virtuel
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -189,6 +203,7 @@ void ReadConfig()
         s.ipdScale = 1.0f;
     s.swapEyes = config::Int("Stereo", "swap_eyes", 0) != 0;
     s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
+    s.cutsceneScreen = config::Int("Display", "cutscene_screen", 1) != 0;
     std::lock_guard lock(g_settingsMutex);
     g_settings = s;
 }
@@ -277,13 +292,16 @@ void HeadedOrientation(const float game[9], const float quat[4], const Settings&
 
 // --- Simulation : mise à jour de la caméra -----------------------------------------------
 
-// État du jeu : 0 en partie, 1 en pause, 2 dans une interface qui laisse le jeu tourner
-enum : int { kPlaying = 0, kPaused = 1, kInterface = 2 };
+// État du jeu : 0 en partie, 1 en pause, 2 dans une interface qui laisse le jeu tourner,
+// 3 dans une cinématique
+enum : int { kPlaying = 0, kPaused = 1, kInterface = 2, kCutscene = 3 };
 int GameState(const Settings& s)
 {
     if (Paused())
         return kPaused;
-    return s.interfaceScreen && InInterface() ? kInterface : kPlaying;
+    if (s.interfaceScreen && InInterface())
+        return kInterface;
+    return s.cutsceneScreen && InCutscene() ? kCutscene : kPlaying;
 }
 
 ULONGLONG g_lastStats = 0;
@@ -323,7 +341,8 @@ void __cdecl HkUpdateCamera()
     const int state = GameState(s);
     if (state != g_lastState) {
         static const char* const kNames[] = {"en partie", "en pause : ecran virtuel",
-                                             "interface ouverte (garde-robe, garage, boutique...) : ecran virtuel"};
+                                             "interface ouverte (garde-robe, garage, boutique...) : ecran virtuel",
+                                             "cinematique : ecran virtuel"};
         LOG_ENGINE("jeu : %s", kNames[state]);
         g_lastState = state;
     }
@@ -343,7 +362,10 @@ void __cdecl HkUpdateCamera()
                        static_cast<double>(g_calls - g_callsAtLastStats) / seconds, GetCurrentThreadId(),
                        static_cast<double>(copies - g_copiesAtLastStats) / seconds, s.levelHorizon ? "a plat" : "du jeu",
                        s.stereo ? "relief (un oeil par image)" : "sans relief",
-                       state == kPaused ? ", JEU EN PAUSE" : state == kInterface ? ", INTERFACE DU JEU OUVERTE" : "");
+                       state == kPaused      ? ", JEU EN PAUSE"
+                       : state == kInterface ? ", INTERFACE DU JEU OUVERTE"
+                       : state == kCutscene  ? ", CINEMATIQUE"
+                                             : "");
             LOG_ENGINE("  vues en attente au Present : aucune %u, une %u, deux %u ; images sans pose de tete %u, "
                        "vues perdues %u",
                        g_pendingAtPresent[0].exchange(0), g_pendingAtPresent[1].exchange(0),
@@ -381,8 +403,8 @@ void OnRenderCamera(double* fov)
     PendingView view;
     view.tick = GetTickCount64();
     if (GameState(s) != kPlaying) {
-        // Menu de pause, magasin, garde-robe, garage : caméra et champ de vue du jeu, image sur
-        // l'écran virtuel
+        // Menu de pause, magasin, garde-robe, garage, cinématique : caméra et champ de vue du
+        // jeu, image sur l'écran virtuel
         PushView(view);
         return;
     }
@@ -519,6 +541,15 @@ bool InstallCameraHook()
                    rel(g_freePlay), static_cast<int>(*g_freePlay));
     } else {
         LOG_ENGINE("octet des interfaces introuvable : magasins, garde-robe et garage resteront en affichage immersif");
+    }
+
+    // Cinématiques
+    if (auto* start = static_cast<uint8_t*>(pattern::Find("lancement de cinematique", kCutsceneStartSig))) {
+        g_cutscene = reinterpret_cast<const uint8_t*>(absolute(start + kCutsceneOffset));
+        LOG_ENGINE("cinematiques : octet exe+0x%lX (vaut %d, 1 = cinematique en cours)", rel(g_cutscene),
+                   static_cast<int>(*g_cutscene));
+    } else {
+        LOG_ENGINE("octet des cinematiques introuvable : elles resteront en affichage immersif");
     }
 
     if (!g_updateCameraTarget && !g_getFovTarget) {

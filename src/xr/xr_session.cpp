@@ -6,14 +6,12 @@
 // sans ralentir le jeu. Repris du jalon 4 de WarbandVR ; l'image arrive par la mémoire
 // (render/frame_capture) au lieu d'une texture partagée.
 #include "xr/xr_session.h"
+#include "input/keys.h"
 #include "render/frame_capture.h"
 #include "util/log.h"
+#include "xr/xr_input.h"
 
-#include <d3d11.h>
 #include <dxgi1_2.h>
-#define XR_USE_GRAPHICS_API_D3D11
-#define XR_USE_PLATFORM_WIN32
-#include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 
 #include <atomic>
@@ -21,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iterator>
+#include <mutex>
 #include <string>
 #include <thread>
 #include <vector>
@@ -34,6 +33,11 @@ constexpr float kScreenDistance = 2.0f;
 constexpr ULONGLONG kStatsIntervalMs = 10000;
 
 std::atomic<bool> g_stop{false};
+
+// Dernière orientation du casque (quaternion x, y, z, w), écrite par le thread XR
+std::mutex g_headMutex;
+float g_headQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+ULONGLONG g_headTick = 0;
 
 // --- Chien de garde : signale un appel bloquant qui ne rend pas la main -------------
 
@@ -194,6 +198,7 @@ private:
     XrSystemId system_ = XR_NULL_SYSTEM_ID;
     XrSession session_ = XR_NULL_HANDLE;
     XrSpace localSpace_ = XR_NULL_HANDLE;
+    XrSpace viewSpace_ = XR_NULL_HANDLE;
     XrSessionState state_ = XR_SESSION_STATE_UNKNOWN;
     bool running_ = false;
     bool exitRequested_ = false;
@@ -210,6 +215,7 @@ private:
     bool hasContent_ = false; // au moins une image du jeu a été copiée dans la swapchain
 
     render::CpuFrame frame_; // dernière image du jeu reçue
+    MenuInput input_;        // manettes -> touches des menus
 
     unsigned long long framesSubmitted_ = 0;
     unsigned long long framesCopied_ = 0;
@@ -380,6 +386,10 @@ bool XrApp::CreateSession()
     si.poseInReferenceSpace.orientation.w = 1.0f;
     if (!Check(xrCreateReferenceSpace(session_, &si, &localSpace_), "xrCreateReferenceSpace(LOCAL)"))
         return false;
+    si.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    if (!Check(xrCreateReferenceSpace(session_, &si, &viewSpace_), "xrCreateReferenceSpace(VIEW)"))
+        return false;
+    input_.Init(instance_, session_);
 
     // Format : sRGB en priorité, car le jeu écrit des valeurs déjà encodées en sRGB
     uint32_t count = 0;
@@ -521,6 +531,27 @@ void XrApp::RenderFrame()
             return;
     }
 
+    // Orientation de la tête à l'instant d'affichage prévu, pour la caméra du jeu. Seulement
+    // casque sur la tête (shouldRender) : posé, il reste suivi et ferait regarder le sol.
+    XrSpaceLocation head{XR_TYPE_SPACE_LOCATION};
+    const bool located = fs.shouldRender &&
+                         XR_SUCCEEDED(xrLocateSpace(viewSpace_, localSpace_, fs.predictedDisplayTime, &head)) &&
+                         (head.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT);
+    {
+        std::lock_guard lock(g_headMutex);
+        if (located) {
+            g_headQuat[0] = head.pose.orientation.x;
+            g_headQuat[1] = head.pose.orientation.y;
+            g_headQuat[2] = head.pose.orientation.z;
+            g_headQuat[3] = head.pose.orientation.w;
+            g_headTick = GetTickCount64();
+        } else {
+            g_headTick = 0;
+        }
+    }
+
+    input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED);
+
     if (fs.shouldRender) {
         if (CopyGameFrame()) {
             hasContent_ = true;
@@ -573,9 +604,10 @@ void XrApp::RenderFrame()
         // Relevé toutes les 10 s pendant 5 min, puis toutes les minutes
         if (statsLogged_ < 30 || statsLogged_ % 6 == 0)
             LOG_XR("casque : %.1f images par seconde soumises, %.1f images du jeu par seconde (capture %.2f ms en "
-                   "moyenne), etat %s",
+                   "moyenne), etat %s, %u touche(s) envoyee(s)",
                    static_cast<double>(framesSubmitted_ - submittedAtStats_) / seconds,
-                   static_cast<double>(framesCopied_ - copiedAtStats_) / seconds, captureMs, StateName(state_));
+                   static_cast<double>(framesCopied_ - copiedAtStats_) / seconds, captureMs, StateName(state_),
+                   input::TakeSentCount());
         ++statsLogged_;
         submittedAtStats_ = framesSubmitted_;
         copiedAtStats_ = framesCopied_;
@@ -585,7 +617,11 @@ void XrApp::RenderFrame()
 
 void XrApp::Shutdown()
 {
+    input_.ReleaseAll();
     DestroySwapchain();
+    if (viewSpace_ != XR_NULL_HANDLE)
+        xrDestroySpace(viewSpace_);
+    viewSpace_ = XR_NULL_HANDLE;
     if (localSpace_ != XR_NULL_HANDLE)
         xrDestroySpace(localSpace_);
     if (session_ != XR_NULL_HANDLE)
@@ -656,6 +692,30 @@ void Start()
 void RequestStop()
 {
     g_stop = true;
+}
+
+bool GetHeadRotation(float out[9])
+{
+    float x, y, z, w;
+    {
+        std::lock_guard lock(g_headMutex);
+        if (!g_headTick || GetTickCount64() - g_headTick > 500)
+            return false;
+        x = g_headQuat[0];
+        y = g_headQuat[1];
+        z = g_headQuat[2];
+        w = g_headQuat[3];
+    }
+    out[0] = 1.0f - 2.0f * (y * y + z * z);
+    out[1] = 2.0f * (x * y - z * w);
+    out[2] = 2.0f * (x * z + y * w);
+    out[3] = 2.0f * (x * y + z * w);
+    out[4] = 1.0f - 2.0f * (x * x + z * z);
+    out[5] = 2.0f * (y * z - x * w);
+    out[6] = 2.0f * (x * z - y * w);
+    out[7] = 2.0f * (y * z + x * w);
+    out[8] = 1.0f - 2.0f * (x * x + y * y);
+    return true;
 }
 
 } // namespace xr

@@ -11,6 +11,7 @@
 #include <ctime>
 #include <string>
 
+#include "engine/camera_hook.h"
 #include "render/d3d9_hook.h"
 #include "util/log.h"
 #include "xr/xr_session.h"
@@ -220,6 +221,7 @@ DWORD WINAPI InitThread(LPVOID)
         return 0;
     }
     xr::Start();
+    engine::InstallCameraHook();
 
     // Le jeu présente-t-il des images par les fonctions détournées ? Vérifié une fois.
     Sleep(15000);
@@ -242,6 +244,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
         // FreeLibrary explicite : on retire les hooks. À la fermeture du processus
         // (reserved != nullptr) les autres threads sont déjà morts, on ne touche à rien.
         xr::RequestStop();
+        engine::RemoveCameraHook();
         render::RemoveD3D9Hooks();
         if (g_minhookReady)
             MH_Uninitialize();

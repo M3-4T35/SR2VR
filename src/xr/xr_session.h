@@ -10,4 +10,10 @@ void Start();
 // Demande l'arrêt du thread (non bloquant : utilisable depuis DllMain)
 void RequestStop();
 
+// Orientation du casque dans l'espace LOCAL (0 = face à l'écran virtuel), prédite pour la
+// prochaine image affichée : matrice de rotation 3x3 rangée par lignes, dont les colonnes
+// sont les axes du casque (x droite, y haut, z arrière). false si la session ne tourne pas
+// ou si le casque n'est pas suivi (pose de plus de 0,5 s).
+bool GetHeadRotation(float out[9]);
+
 } // namespace xr

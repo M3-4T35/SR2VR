@@ -1,5 +1,7 @@
 #include "input/actions.h"
 
+#include <windows.h>
+
 #include <atomic>
 
 namespace input::actions {
@@ -9,6 +11,11 @@ std::atomic<bool> g_down[kCount]{};
 std::atomic<unsigned> g_presses[kCount]{};
 std::atomic<bool> g_direct{false};
 std::atomic<bool> g_dual{false};
+std::atomic<float> g_yaw{0.0f};
+std::atomic<bool> g_yawSteady{false};
+std::atomic<unsigned> g_yawSequence{0};
+std::atomic<ULONGLONG> g_yawTick{0};
+constexpr ULONGLONG kYawMaxAgeMs = 400;
 
 } // namespace
 
@@ -56,6 +63,25 @@ void SetDualWield(bool dual)
 bool DualWield()
 {
     return g_dual;
+}
+
+void SetGameYaw(float degrees, bool steady)
+{
+    g_yaw = degrees;
+    g_yawSteady = steady;
+    g_yawTick = GetTickCount64();
+    ++g_yawSequence;
+}
+
+bool GameYaw(float* degrees, unsigned* sequence, bool* steady)
+{
+    const ULONGLONG tick = g_yawTick;
+    if (!tick || GetTickCount64() - tick > kYawMaxAgeMs)
+        return false;
+    *sequence = g_yawSequence;
+    *degrees = g_yaw;
+    *steady = g_yawSteady;
+    return true;
 }
 
 } // namespace input::actions

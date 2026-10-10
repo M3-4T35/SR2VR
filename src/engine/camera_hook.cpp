@@ -73,6 +73,7 @@
 #include "engine/hands.h"
 #include "engine/hud.h"
 #include "engine/player.h"
+#include "input/actions.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
@@ -319,9 +320,9 @@ void ReadConfig()
     s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
     s.cutsceneScreen = config::Int("Display", "cutscene_screen", 1) != 0;
     s.handAim = config::Int("Hands", "aim", 1) != 0;
-    s.laser = config::Int("Hands", "laser", 1);
+    s.laser = config::Int("Hands", "laser", 2);
     if (s.laser < 0 || s.laser > 3)
-        s.laser = 1;
+        s.laser = 2;
     s.handArms = config::Int("Hands", "arms", 0) != 0;
     s.torsoMax = config::Float("Hands", "torso", 90.0f);
     if (!(s.torsoMax >= 0.0f && s.torsoMax <= 180.0f))
@@ -747,6 +748,9 @@ void __cdecl HkUpdateCamera()
         LOG_ENGINE("jeu : %s", kNames[state]);
         g_lastState = state;
     }
+    // Lacet de la caméra du jeu, pour la rotation par crans (mesure de ce que le jeu a tourné)
+    if (state == kPlaying)
+        input::actions::SetGameYaw(std::atan2(game[6], game[8]) * 57.29578f, !player::InVehicle());
     // La caméra de la simulation suit le regard : culling, son et sens de la marche
     const bool headed = tracked && s.headTracking && state == kPlaying;
     if (headed) {

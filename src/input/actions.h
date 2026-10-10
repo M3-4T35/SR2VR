@@ -36,4 +36,12 @@ bool Direct();
 void SetDualWield(bool dual);
 bool DualWield();
 
+// Lacet de la caméra du jeu elle-même (sans le casque), en degrés, croissant vers la droite :
+// publié par le moteur à chaque image de simulation, lu par la rotation par crans pour mesurer
+// de combien le jeu a réellement tourné. steady : le personnage est à pied, la caméra ne tourne
+// que sur commande (en véhicule elle suit aussi la route).
+void SetGameYaw(float degrees, bool steady);
+// false sans mesure récente (hors du jeu, pause). sequence : numéro de la mesure.
+bool GameYaw(float* degrees, unsigned* sequence, bool* steady);
+
 } // namespace input::actions

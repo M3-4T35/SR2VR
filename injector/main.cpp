@@ -4,8 +4,13 @@
 // 32 bits comme le jeu : l'adresse de LoadLibraryW doit être celle du kernel32 32 bits.
 //
 // Usage : sr2_vr_injector [--game-dir <dossier>] [--dll <chemin>] [--early]
-//                         [--steamvr | --runtime <json>]
+//                         [--steamvr | --runtime <json> | --default-runtime]
+//                         [--launcher | --no-launcher]
 //                         [--wait] [--timeout <s>] [-- <arguments du jeu>]
+//   --launcher / --no-launcher : ouvre (ou non) le lanceur avant le jeu : sr2_vr_config.exe
+//               --launcher, choix des réglages, Jouer ou Quitter. Par défaut : selon
+//               show_launcher dans la section [Launch] de sr2_vr.ini (1), et jamais quand des
+//               arguments du jeu sont donnés.
 //   --early   : injecte avant que le jeu ne démarre (processus suspendu).
 //               Par défaut on attend la fenêtre du jeu.
 //   --steamvr : utilise le runtime OpenXR 32 bits de SteamVR pour ce lancement seulement
@@ -15,7 +20,9 @@
 //               Sans ces options : runtime actif de Windows, sauf si c'est celui de Meta,
 //               dont la version 32 bits plante à la création de la session (constaté avec
 //               Oculus 1.208, même hors du jeu : tools/xr_probe). SteamVR est alors choisi
-//               s'il est installé ; il pilote aussi les casques Meta (Link).
+//               s'il est installé ; il pilote aussi les casques Meta (Link). Sans ces options,
+//               openxr_runtime de la section [Launch] choisit : 0 automatique (ci-dessus),
+//               1 SteamVR, 2 celui de Windows.
 //   --wait    : reste ouvert jusqu'à la fermeture du jeu (automatique si lancé par Steam).
 //   Dossier du jeu : --game-dir, sinon le dossier de l'injecteur s'il contient le jeu, sinon
 //   game_dir dans la section [Launch] de sr2_vr.ini (à côté de l'injecteur), sinon les
@@ -275,10 +282,38 @@ bool InjectDll(HANDLE process, const std::wstring& dllPath)
     return ok;
 }
 
+// Lanceur : outil de configuration en mode --launcher. true si l'utilisateur a cliqué sur
+// Jouer (réglages enregistrés), false s'il a quitté. Outil absent : on continue sans lui.
+bool RunLauncher()
+{
+    const std::wstring tool = DirOfSelf() + L"\\sr2_vr_config.exe";
+    if (!FileExists(tool)) {
+        Out(stderr, L"[injector] Lanceur introuvable (%s) : lancement direct\n", tool.c_str());
+        return true;
+    }
+    std::wstring cmd = L"\"" + tool + L"\" --launcher";
+    std::vector<wchar_t> buf(cmd.begin(), cmd.end());
+    buf.push_back(L'\0');
+    STARTUPINFOW si{sizeof(si)};
+    PROCESS_INFORMATION pi{};
+    if (!CreateProcessW(tool.c_str(), buf.data(), nullptr, nullptr, FALSE, 0, nullptr, DirOfSelf().c_str(), &si, &pi)) {
+        PrintLastError(L"CreateProcessW (lanceur)");
+        return true;
+    }
+    Out(stdout, L"[injector] Lanceur ouvert, en attente du choix (Jouer ou Quitter)\n");
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD code = 1;
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return code == 0;
+}
+
 void Usage()
 {
     fwprintf(stderr, L"Usage : sr2_vr_injector [--game-dir <dossier>] [--dll <chemin>] [--early]\n"
                      L"                        [--steamvr | --runtime <json> | --default-runtime]\n"
+                     L"                        [--launcher | --no-launcher]\n"
                      L"                        [--wait] [--timeout <s>] [-- <arguments du jeu>]\n");
 }
 
@@ -302,6 +337,7 @@ int wmain(int argc, wchar_t** argv)
     bool wait = false;
     bool steamvr = false;
     bool defaultRuntime = false;
+    int launcher = -1; // -1 : selon le réglage, 0 / 1 : imposé en ligne de commande
     std::wstring runtimeJson;
     DWORD timeoutSec = 120;
 
@@ -323,6 +359,10 @@ int wmain(int argc, wchar_t** argv)
             runtimeJson = argv[++i];
         } else if (a == L"--default-runtime") {
             defaultRuntime = true;
+        } else if (a == L"--launcher") {
+            launcher = 1;
+        } else if (a == L"--no-launcher") {
+            launcher = 0;
         } else if (a == L"--") {
             for (++i; i < argc; ++i) {
                 if (!gameArgs.empty())
@@ -339,11 +379,26 @@ int wmain(int argc, wchar_t** argv)
         }
     }
 
+    // Lanceur : avant de lire les réglages du lancement, qu'il peut changer
+    const std::wstring iniPath = DirOfSelf() + L"\\" + kIniName;
+    if (launcher == 1 ||
+        (launcher == -1 && gameArgs.empty() && GetPrivateProfileIntW(L"Launch", L"show_launcher", 1, iniPath.c_str()) != 0)) {
+        if (!RunLauncher()) {
+            Out(stdout, L"[injector] Lanceur ferme sans Jouer : le jeu n'est pas lance\n");
+            return 0;
+        }
+    }
+    // Runtime OpenXR choisi dans le lanceur, si la ligne de commande n'impose rien
+    if (!steamvr && !defaultRuntime && runtimeJson.empty()) {
+        const UINT choice = GetPrivateProfileIntW(L"Launch", L"openxr_runtime", 0, iniPath.c_str());
+        steamvr = choice == 1;
+        defaultRuntime = choice == 2;
+    }
+
     const wchar_t* source = L"--game-dir";
     if (gameDir.empty()) {
         wchar_t fromIni[MAX_PATH]{};
-        GetPrivateProfileStringW(L"Launch", L"game_dir", L"", fromIni, MAX_PATH,
-                                 (DirOfSelf() + L"\\" + kIniName).c_str());
+        GetPrivateProfileStringW(L"Launch", L"game_dir", L"", fromIni, MAX_PATH, iniPath.c_str());
         if (FileExists(DirOfSelf() + L"\\" + kExeName)) {
             gameDir = DirOfSelf();
             source = L"dossier de l'injecteur";

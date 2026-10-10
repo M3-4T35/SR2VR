@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
 #include <vector>
@@ -24,6 +25,30 @@ constexpr ULONGLONG kRepeatPeriodMs = 130;
 constexpr float kMoveEngage = 0.45f;
 constexpr float kMoveRelease = 0.3f;
 constexpr float kTurnDeadzone = 0.15f;
+// Rotation par crans : un cran quand le stick dépasse 0,6, réarmé quand il repasse sous 0,3
+constexpr float kSnapEngage = 0.6f;
+constexpr float kSnapRelease = 0.3f;
+constexpr float kSnapToleranceDegrees = 1.5f; // écart accepté sans rattrapage
+constexpr int kSnapMaxBursts = 5;
+constexpr int kSnapMaxBurstPixels = 3000;
+constexpr ULONGLONG kSnapTimeoutMs = 1500;
+// Après un envoi : la caméra du jeu est relue au plus tôt après ce délai et ce nombre d'images
+constexpr ULONGLONG kSnapSettleMs = 150;
+constexpr unsigned kSnapSettleFrames = 3;
+// Rapport encore inconnu : le premier cran commence par un essai de cette part de l'angle
+constexpr float kSnapProbeShare = 0.3f;
+// Rapport de départ, avant toute mesure : la vitesse de rotation continue réglée par le joueur
+// fait à peu près 150 degrés par seconde
+constexpr float kSnapGuessDegreesPerSecond = 150.0f;
+
+float WrapDegrees(float a)
+{
+    while (a > 180.0f)
+        a -= 360.0f;
+    while (a < -180.0f)
+        a += 360.0f;
+    return a;
+}
 // Sans image de jeu préparée depuis ce délai, on est dans un menu
 constexpr ULONGLONG kGameplayTimeoutMs = 300;
 
@@ -234,6 +259,21 @@ void MenuInput::ReadConfig()
     turnSpeed_ = config::Float("Controls", "turn_speed", 1200.0f);
     if (!(turnSpeed_ >= -20000.0f && turnSpeed_ <= 20000.0f))
         turnSpeed_ = 1200.0f;
+    turnMode_ = config::Int("Controls", "turn_mode", 0) == 1 ? 1 : 0;
+    snapAngle_ = config::Float("Controls", "snap_angle", 30.0f);
+    if (!(snapAngle_ >= 5.0f && snapAngle_ <= 180.0f))
+        snapAngle_ = 30.0f;
+    // Rapport pixels / degré : celui appris lors d'une partie précédente, sinon une supposition
+    if (!snapLoaded_) {
+        snapLoaded_ = true;
+        const float saved = config::Float("Learned", "turn_pixels_per_degree", 0.0f);
+        if (std::fabs(saved) > 0.05f && std::fabs(saved) < 1000.0f) {
+            pixelsPerDegree_ = snapSaved_ = saved;
+            snapLearned_ = true;
+        }
+    }
+    if (!snapLearned_ && !snap_.active)
+        pixelsPerDegree_ = turnSpeed_ / kSnapGuessDegreesPerSecond;
     // Touches du saut et de l'accroupissement, si elles ont été changées dans le jeu
     const auto assign = [this](Key& key, const char* name, int fallback) {
         int code = config::Int("Controls", name, fallback);
@@ -346,11 +386,11 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         }
     }
     ready_ = true;
-    LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%.0f px/s), "
+    LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%s, %.0f px/s), "
            "haut = sauter (position 0x%02X), bas = s'accroupir (position 0x%02X), poignee droite = E, gachette droite "
            "= tir, gachette gauche = attaque secondaire (tir avec deux armes), poignee gauche = courir, X = recharger "
            "(tir : fire_mode=%d). Menus : sticks = fleches, gachettes = Ctrl / Maj. A = Entree, B ou menu gauche = Echap",
-           accepted, turnSpeed_, jump_.code, crouch_.code, fireMode_);
+           accepted, turnMode_ == 1 ? "par crans" : "en continu", turnSpeed_, jump_.code, crouch_.code, fireMode_);
     return true;
 }
 
@@ -378,6 +418,137 @@ void MenuInput::SetKey(Key& key, bool pressed, bool repeat)
     }
 }
 
+void MenuInput::SendSnapBurst(float degrees, float yaw, unsigned sequence)
+{
+    int pixels = static_cast<int>(std::lround(degrees * pixelsPerDegree_));
+    if (pixels > kSnapMaxBurstPixels)
+        pixels = kSnapMaxBurstPixels;
+    if (pixels < -kSnapMaxBurstPixels)
+        pixels = -kSnapMaxBurstPixels;
+    snap_.burstYaw = snap_.lastYaw = yaw;
+    snap_.burstSequence = snap_.lastSequence = sequence;
+    snap_.burstPixels = pixels;
+    snap_.burstDegrees = degrees;
+    snap_.burstTick = GetTickCount64();
+    if (!pixels || !input::MoveMouse(pixels, 0)) {
+        // Jeu pas au premier plan (rien n'est envoyé ailleurs) : cran abandonné
+        snap_.burstPixels = 0;
+        snap_.active = false;
+        return;
+    }
+    snap_.pixels += pixels;
+    ++snap_.bursts;
+}
+
+void MenuInput::FinishSnap(const char* why, float yaw, ULONGLONG now)
+{
+    snap_.active = false;
+    ++snapCount_;
+    // Rapport appris gardé pour la prochaine partie (le premier cran sera juste d'emblée)
+    if (snapLearned_ && std::fabs(pixelsPerDegree_ - snapSaved_) > 0.03f * std::fabs(pixelsPerDegree_) && config::Path()[0]) {
+        char text[32];
+        snprintf(text, sizeof(text), "%.3f", pixelsPerDegree_);
+        if (WritePrivateProfileStringA("Learned", "turn_pixels_per_degree", text, config::Path()))
+            snapSaved_ = pixelsPerDegree_;
+    }
+    // Les premiers crans, puis un sur vingt : de quoi juger la rotation sans casque
+    if (snapCount_ > 12 && snapCount_ % 20)
+        return;
+    if (snap_.closed)
+        LOG_XR("rotation par crans n%u : %.0f degres voulus, %.1f tournes en %d envoi(s) (%d px, %llu ms), %.2f px/degre%s%s",
+               snapCount_, snap_.target, WrapDegrees(yaw - snap_.startYaw), snap_.bursts, snap_.pixels,
+               now - snap_.startTick, pixelsPerDegree_, why[0] ? " - " : "", why);
+    else
+        LOG_XR("rotation par crans n%u : %.0f degres voulus, %d px envoyes sans mesure du jeu (%.2f px/degre suppose)%s%s",
+               snapCount_, snap_.target, snap_.pixels, pixelsPerDegree_, why[0] ? " - " : "", why);
+}
+
+void MenuInput::UpdateSnap(float rx, float ry, bool blocked, ULONGLONG now)
+{
+    const float ax = std::fabs(rx);
+    if (ax < kSnapRelease)
+        snapArmed_ = true;
+
+    float yaw = 0.0f;
+    unsigned sequence = 0;
+    bool steady = false;
+    const bool measured = input::actions::GameYaw(&yaw, &sequence, &steady);
+
+    if (!snap_.active) {
+        if (!snapArmed_ || blocked || ax <= kSnapEngage || ax <= std::fabs(ry))
+            return;
+        snapArmed_ = false;
+        snap_ = Snap{};
+        snap_.active = true;
+        snap_.closed = measured && steady;
+        snap_.target = rx > 0.0f ? snapAngle_ : -snapAngle_;
+        snap_.startYaw = yaw;
+        snap_.startTick = now;
+        // Rapport encore supposé et jeu mesurable : un essai d'abord, le reste une fois mesuré
+        SendSnapBurst(snap_.closed && !snapLearned_ ? snap_.target * kSnapProbeShare : snap_.target, yaw, sequence);
+        // Sans mesure (véhicule : la caméra suit aussi la route) : un seul envoi, au rapport connu
+        if (snap_.active && !snap_.closed)
+            FinishSnap("", yaw, now);
+        return;
+    }
+
+    if (!measured || !steady) {
+        FinishSnap("mesure perdue", snap_.lastYaw, now);
+        return;
+    }
+    if (now - snap_.startTick > kSnapTimeoutMs) {
+        FinishSnap("delai depasse", yaw, now);
+        return;
+    }
+    if (sequence == snap_.lastSequence)
+        return; // pas de nouvelle image de simulation
+    const float moved = std::fabs(WrapDegrees(yaw - snap_.lastYaw));
+    snap_.lastYaw = yaw;
+    snap_.lastSequence = sequence;
+    // La caméra a-t-elle fini de tourner ? Quelques images après l'envoi (le jeu lit la souris à
+    // l'image suivante), puis immobile (ou dix images : elle tourne peut-être pour une autre raison)
+    const unsigned since = sequence - snap_.burstSequence;
+    const ULONGLONG waited = now - snap_.burstTick;
+    if (since < kSnapSettleFrames || waited < kSnapSettleMs)
+        return;
+    const float turned = WrapDegrees(yaw - snap_.burstYaw);
+    if (std::fabs(turned) < 0.5f) {
+        if (since < 8 || waited < 400)
+            return;
+        // Rapport encore supposé : l'essai était peut-être trop petit pour ce jeu, on le triple
+        if (!snapLearned_ && snap_.bursts < 3) {
+            pixelsPerDegree_ *= 3.0f;
+            SendSnapBurst(snap_.burstDegrees, yaw, sequence);
+            if (snap_.active)
+                return;
+        }
+        // Le jeu n'a pas réagi à la souris (pause, fenêtre sans la souris) : inutile d'insister
+        FinishSnap("le jeu n'a pas tourne", yaw, now);
+        return;
+    }
+    if (moved > 0.4f && since < 10)
+        return;
+    // Rapport mesuré sur cet envoi (signe compris : un jeu réglé en souris inversée s'apprend
+    // aussi). Seuls comptent les grands envois : les petits rattrapages mesurent mal.
+    if (std::fabs(turned) > 1.5f && (!snapLearned_ || std::fabs(snap_.burstDegrees) >= 0.4f * snapAngle_)) {
+        const float ratio = static_cast<float>(snap_.burstPixels) / turned;
+        if (std::fabs(ratio) > 0.05f && std::fabs(ratio) < 1000.0f) {
+            pixelsPerDegree_ = snapLearned_ && ratio * pixelsPerDegree_ > 0.0f ? 0.5f * (pixelsPerDegree_ + ratio) : ratio;
+            snapLearned_ = true;
+        }
+    }
+    const float remaining = snap_.target - WrapDegrees(yaw - snap_.startYaw);
+    if (std::fabs(remaining) <= kSnapToleranceDegrees) {
+        FinishSnap("", yaw, now);
+    } else if (snap_.bursts >= kSnapMaxBursts) {
+        FinishSnap("trop d'envois", yaw, now);
+    } else {
+        SendSnapBurst(remaining, yaw, sequence);
+        if (!snap_.active)
+            FinishSnap("jeu pas au premier plan", yaw, now);
+    }
+}
+
 void MenuInput::SetMouseButton(int button, bool pressed)
 {
     if (pressed == mouseHeld_[button])
@@ -402,6 +573,7 @@ void MenuInput::ReleaseAll()
     SetKey(crouch_, false, false);
     direction_ = -1;
     turnRemainder_ = 0.0f;
+    snap_.active = false;
     input::actions::ReleaseAll();
     SetMouseButton(0, false);
     SetMouseButton(1, false);
@@ -636,8 +808,12 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         // Tourner : la souris se déplace à l'horizontale, proportionnellement au stick. Pas
         // pendant un saut ou un accroupissement commandé au stick, qui dévie toujours un peu.
         float turn = 0.0f;
-        if (!jump_.held && !crouch_.held && std::fabs(rx) > kTurnDeadzone)
+        if (turnMode_ == 1)
+            UpdateSnap(rx, ry, jump_.held || crouch_.held, now);
+        else if (!jump_.held && !crouch_.held && std::fabs(rx) > kTurnDeadzone)
             turn = (rx - (rx > 0.0f ? kTurnDeadzone : -kTurnDeadzone)) / (1.0f - kTurnDeadzone);
+        if (turnMode_ != 1)
+            snap_.active = false;
         turnRemainder_ += turn * turnSpeed_ * dt;
         const int pixels = static_cast<int>(turnRemainder_);
         if (pixels) {
@@ -656,6 +832,8 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         SetKey(jump_, false, false);
         SetKey(crouch_, false, false);
         turnRemainder_ = 0.0f;
+        snap_.active = false;
+        snapArmed_ = false; // un stick incliné dans un menu ne fait pas tourner au retour en partie
 
         // Menus : le stick le plus incliné donne une flèche. Axe dominant ; la direction
         // courante tient jusqu'à ce que le stick revienne vers le centre.

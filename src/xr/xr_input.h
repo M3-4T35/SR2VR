@@ -134,6 +134,38 @@ private:
     // Tourner : pixels de souris par seconde, stick à fond ([Controls] turn_speed)
     float turnSpeed_ = 1200.0f;
     float turnRemainder_ = 0.0f;
+
+    // Rotation par crans ([Controls] turn_mode=1, snap_angle) : une poussée du stick = un cran.
+    // Le cran part en un déplacement de souris ; le lacet de la caméra du jeu, relu ensuite,
+    // dit de combien le jeu a réellement tourné : le rapport pixels / degré s'apprend ainsi, et
+    // l'écart restant est rattrapé par un envoi de plus.
+    void UpdateSnap(float rx, float ry, bool blocked, ULONGLONG now);
+    void SendSnapBurst(float degrees, float yaw, unsigned sequence);
+    void FinishSnap(const char* why, float yaw, ULONGLONG now);
+    int turnMode_ = 0;       // 0 continue, 1 par crans
+    float snapAngle_ = 30.0f;
+    float pixelsPerDegree_ = 0.0f; // appris en jouant, gardé dans [Learned] turn_pixels_per_degree
+    bool snapLearned_ = false;     // false : valeur supposée, le premier cran commence par un essai
+    bool snapLoaded_ = false;      // la valeur gardée a été relue
+    float snapSaved_ = 0.0f;       // dernière valeur écrite dans le fichier
+    bool snapArmed_ = true;  // le stick est revenu au centre depuis le dernier cran
+    struct Snap {
+        bool active = false;
+        bool closed = false;    // le lacet du jeu est mesuré : écart rattrapé
+        float target = 0.0f;    // degrés voulus, positif = droite
+        float startYaw = 0.0f;
+        float burstYaw = 0.0f;  // lacet au moment du dernier envoi
+        unsigned burstSequence = 0;
+        int burstPixels = 0;
+        float burstDegrees = 0.0f; // ce que cet envoi devait faire tourner
+        ULONGLONG burstTick = 0;
+        float lastYaw = 0.0f;
+        unsigned lastSequence = 0;
+        int bursts = 0;
+        int pixels = 0;
+        ULONGLONG startTick = 0;
+    } snap_;
+    unsigned snapCount_ = 0;
     LARGE_INTEGER lastUpdate_{};
     ULONGLONG lastConfig_ = 0;
 };

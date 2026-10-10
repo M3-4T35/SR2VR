@@ -25,7 +25,7 @@ echo === compilation === >> "%LOG%"
 if errorlevel 1 goto fail
 
 echo BUILD OK >> "%LOG%"
-echo Compilation reussie : build\Release\sr2_vr.dll, build\Release\sr2_vr_injector.exe
+echo Compilation reussie : build\Release\sr2_vr.dll, sr2_vr_injector.exe, sr2_vr_config.exe
 exit /b 0
 
 :fail

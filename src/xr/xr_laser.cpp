@@ -209,7 +209,7 @@ void Laser::Destroy()
 
 void Laser::ReadConfig()
 {
-    mode_ = config::Int("Hands", "laser", 1);
+    mode_ = config::Int("Hands", "laser", 2);
     length_ = config::Float("Hands", "laser_length", 3.0f);
     if (!(length_ >= 0.2f && length_ <= 200.0f))
         length_ = 3.0f;

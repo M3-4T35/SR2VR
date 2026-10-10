@@ -44,4 +44,16 @@ void SetGameYaw(float degrees, bool steady);
 // false sans mesure récente (hors du jeu, pause). sequence : numéro de la mesure.
 bool GameYaw(float* degrees, unsigned* sequence, bool* steady);
 
+// Vitesse de chaque main dans la pièce (m/s ; hand : 0 gauche, 1 droite), rapportée par le
+// thread XR à chaque image du casque, négative si la manette n'est pas suivie. La simulation
+// tourne bien moins vite : TakeHandSpeed rend la plus grande vitesse rapportée depuis sa
+// dernière lecture (un coup de poing bref ne passe pas entre deux images), -1 sans mesure.
+void ReportHandSpeed(int hand, float speed);
+float TakeHandSpeed(int hand);
+
+// Vibration d'une manette demandée par le moteur (coup porté) : force de 0 à 1, durée en
+// millisecondes. Le thread XR la prend à son image suivante.
+void RequestHaptic(int hand, float amplitude, unsigned milliseconds);
+bool TakeHaptic(int hand, float* amplitude, unsigned* milliseconds);
+
 } // namespace input::actions

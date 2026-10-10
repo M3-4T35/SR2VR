@@ -28,7 +28,7 @@ constexpr float kTurnDeadzone = 0.15f;
 // Rotation par crans : un cran quand le stick dépasse 0,6, réarmé quand il repasse sous 0,3
 constexpr float kSnapEngage = 0.6f;
 constexpr float kSnapRelease = 0.3f;
-constexpr float kSnapToleranceDegrees = 1.5f; // écart accepté sans rattrapage
+constexpr float kSnapToleranceDegrees = 3.0f; // écart accepté sans rattrapage
 constexpr int kSnapMaxBursts = 5;
 constexpr int kSnapMaxBurstPixels = 3000;
 constexpr ULONGLONG kSnapTimeoutMs = 1500;
@@ -332,7 +332,9 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "reload", "Recharger", &reload_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_aim_pose", "Viser (main gauche)", &leftAimPose_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_grip_pose", "Main gauche", &gripPose_[0]) ||
-        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "right_grip_pose", "Main droite", &gripPose_[1])) {
+        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "right_grip_pose", "Main droite", &gripPose_[1]) ||
+        !CreateAction(set_, XR_ACTION_TYPE_VIBRATION_OUTPUT, "left_haptic", "Vibration gauche", &haptic_[0]) ||
+        !CreateAction(set_, XR_ACTION_TYPE_VIBRATION_OUTPUT, "right_haptic", "Vibration droite", &haptic_[1])) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
         return false;
     }
@@ -349,6 +351,8 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         suggested.push_back({leftAimPose_, ToPath(instance, "/user/hand/left/input/aim/pose")});
         suggested.push_back({gripPose_[0], ToPath(instance, "/user/hand/left/input/grip/pose")});
         suggested.push_back({gripPose_[1], ToPath(instance, "/user/hand/right/input/grip/pose")});
+        suggested.push_back({haptic_[0], ToPath(instance, "/user/hand/left/output/haptic")});
+        suggested.push_back({haptic_[1], ToPath(instance, "/user/hand/right/output/haptic")});
         XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
         sb.interactionProfile = ToPath(instance, profile.name);
         sb.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
@@ -533,7 +537,7 @@ void MenuInput::UpdateSnap(float rx, float ry, bool blocked, ULONGLONG now)
     if (std::fabs(turned) > 1.5f && (!snapLearned_ || std::fabs(snap_.burstDegrees) >= 0.4f * snapAngle_)) {
         const float ratio = static_cast<float>(snap_.burstPixels) / turned;
         if (std::fabs(ratio) > 0.05f && std::fabs(ratio) < 1000.0f) {
-            pixelsPerDegree_ = snapLearned_ && ratio * pixelsPerDegree_ > 0.0f ? 0.5f * (pixelsPerDegree_ + ratio) : ratio;
+            pixelsPerDegree_ = snapLearned_ && ratio * pixelsPerDegree_ > 0.0f ? 0.75f * pixelsPerDegree_ + 0.25f * ratio : ratio;
             snapLearned_ = true;
         }
     }
@@ -582,6 +586,10 @@ void MenuInput::ReleaseAll()
     aimPoseValid_[0] = aimPoseValid_[1] = false;
     PublishHand(0, nullptr, nullptr);
     PublishHand(1, nullptr, nullptr);
+    for (int hand = 0; hand < 2; ++hand) {
+        gripSeen_[hand] = false;
+        input::actions::ReportHandSpeed(hand, -1.0f);
+    }
     wheelOpen_ = false;
     wheelCloseTick_ = 0;
     input::vpad::Reset();
@@ -698,13 +706,46 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         if (aimed)
             aimPoseLocal_[hand] = aim.pose;
 
+        XrSpaceVelocity velocity{XR_TYPE_SPACE_VELOCITY};
         XrSpaceLocation grip{XR_TYPE_SPACE_LOCATION};
+        grip.next = &velocity;
         const XrSpaceLocationFlags gripFlags =
             XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
         const bool held = head && gripSpace_[hand] != XR_NULL_HANDLE && base != XR_NULL_HANDLE &&
                           XR_SUCCEEDED(xrLocateSpace(gripSpace_[hand], base, time, &grip)) &&
                           (grip.locationFlags & gripFlags) == gripFlags;
         PublishHand(hand, held ? &grip.pose.position : nullptr, head);
+
+        // Vitesse de la main dans la pièce, pour les coups portés au geste
+        float speed = -1.0f;
+        if (held) {
+            const XrVector3f& p = grip.pose.position;
+            if (velocity.velocityFlags & XR_SPACE_VELOCITY_LINEAR_VALID_BIT) {
+                const XrVector3f& v = velocity.linearVelocity;
+                speed = std::sqrt(v.x * v.x + v.y * v.y + v.z * v.z);
+            } else if (gripSeen_[hand] && dt > 0.0f) {
+                const float dx = p.x - gripLast_[hand].x, dy = p.y - gripLast_[hand].y, dz = p.z - gripLast_[hand].z;
+                speed = std::sqrt(dx * dx + dy * dy + dz * dz) / dt;
+            } else {
+                speed = 0.0f;
+            }
+            gripLast_[hand] = p;
+        }
+        gripSeen_[hand] = held;
+        input::actions::ReportHandSpeed(hand, speed);
+
+        // Vibration demandée par le moteur (coup porté)
+        float amplitude = 0.0f;
+        unsigned milliseconds = 0;
+        if (input::actions::TakeHaptic(hand, &amplitude, &milliseconds) && haptic_[hand] != XR_NULL_HANDLE) {
+            XrHapticVibration vibration{XR_TYPE_HAPTIC_VIBRATION};
+            vibration.amplitude = amplitude;
+            vibration.duration = static_cast<XrDuration>(milliseconds) * 1000000;
+            vibration.frequency = XR_FREQUENCY_UNSPECIFIED;
+            XrHapticActionInfo info{XR_TYPE_HAPTIC_ACTION_INFO};
+            info.action = haptic_[hand];
+            xrApplyHapticFeedback(session, &info, reinterpret_cast<const XrHapticBaseHeader*>(&vibration));
+        }
     }
 
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};

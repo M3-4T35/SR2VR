@@ -152,6 +152,22 @@ const Definition kDefs[] = {
      {L"The character's torso turns towards where you look, up to this angle. 0: the game's animation.",
       L"Le buste du personnage se tourne vers le regard, jusqu'à cet angle. 0 : buste de l'animation du jeu."}},
 
+    {L"Melee", L"enabled", kTabHands, {L"Hit with your hands (fists, melee weapons)", L"Coups au geste (poings, armes blanches)"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"A fast move of a fist, or of the melee weapon held in the right hand, hits what it goes through. The "
+      L"trigger still starts the game's animated attacks.",
+      L"Un geste rapide du poing, ou de l'arme blanche tenue dans la main droite, frappe ce qu'il traverse. La "
+      L"gâchette lance toujours les attaques animées du jeu."}},
+    {L"Melee", L"speed", kTabHands, {L"Hits: hand speed needed (m/s)", L"Coups : vitesse de main nécessaire (m/s)"},
+     Kind::Float, 1.8f, 0.8f, 4.0f, 0.1f, kNone,
+     {L"Speed of the hand from which a move counts as a hit. Lower: hits land more easily, also by accident.",
+      L"Vitesse de la main à partir de laquelle un geste est un coup. Plus bas : les coups partent plus facilement, "
+      L"y compris sans le vouloir."}},
+    {L"Melee", L"weapon_tilt", kTabHands, {L"Melee weapon: tilt (degrees)", L"Arme blanche : inclinaison (degrés)"},
+     Kind::Float, 0, -60, 60, 5, kNone,
+     {L"Tilts the weapon held in the hand. Positive: the blade leans forward, towards where the controller points.",
+      L"Incline l'arme tenue dans la main. Positif : la lame se couche vers l'avant, vers où pointe la manette."}},
+
     // --- Avancé ---
     {L"Camera", L"head_tracking", kTabAdvanced, {L"Head tracking", L"Suivi de la tête"}, Kind::Bool, 1, 0, 1, 0, kNone,
      {L"The camera follows the headset. Off: diagnostic only.",

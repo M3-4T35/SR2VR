@@ -35,6 +35,13 @@ void Remove();
 // vers le regard avant de poser les bras (0 = buste laissé à l'animation).
 void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3], float torsoMaxDegrees);
 
+// Arme blanche : inclinaison de la main vers l'avant, en degrés ([Melee] weapon_tilt)
+void SetMeleeTilt(float degrees);
+
+// Poing d'une main dans le monde après la dernière pose des bras (au bout de l'avant-bras).
+// false : ce bras n'a pas été posé à l'instant (manette non suivie, bras à l'animation).
+bool Fist(int hand, float world[3]);
+
 // Relevé pour le log, depuis le dernier appel : images où chaque bras a été posé, plus grand
 // écart constaté entre le poignet et sa cible après la pose (mètres), images où le buste a été
 // tourné et plus grand angle appliqué (degrés)

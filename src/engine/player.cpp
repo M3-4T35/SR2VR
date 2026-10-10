@@ -38,6 +38,7 @@ constexpr size_t kSlotInfo = 8;        // dans la case : description de l'arme
 constexpr size_t kSlotFlags2 = 0xD;    // dans la case : bit 0 = arme tenue en double
 constexpr size_t kInfoClass = 0x34;    // dans la description : classe de l'arme
 constexpr size_t kInfoRange = 0xE0;    // dans la description : portée (float, mètres)
+constexpr size_t kInfoMeleePrimary = 0x2BC; // attaque de mêlée principale, debout (0xFF : aucune)
 constexpr size_t kObjectNumber = 0x44; // dans tout objet : son numéro
 constexpr size_t kObjectType = 0x4C;   // dans tout objet : son type (5 = véhicule)
 
@@ -281,6 +282,23 @@ bool WeaponInfo(int* weaponClass, float* range)
 #if defined(_MSC_VER) && !defined(__clang__)
     } __except (EXCEPTION_EXECUTE_HANDLER) {
         return false;
+    }
+#endif
+}
+
+int HeldMeleeAttack()
+{
+    const uint8_t* slot = HeldSlot();
+    if (!slot)
+        return -1;
+#if defined(_MSC_VER) && !defined(__clang__)
+    __try {
+#endif
+        const uint8_t* info = *reinterpret_cast<const uint8_t* const*>(slot + kSlotInfo);
+        return info[kInfoMeleePrimary];
+#if defined(_MSC_VER) && !defined(__clang__)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return -1;
     }
 #endif
 }

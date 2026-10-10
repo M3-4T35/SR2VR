@@ -118,6 +118,20 @@ struct Grip {
     float offset[3]{};
 };
 Grip g_grip[2];
+// Main vide ou arme blanche : il n'y a pas de canon à poser sur le rayon de visée. La main prend
+// l'attitude de celle qui tient un pistolet pointé comme la manette, ce qu'est à peu près une
+// main fermée sur une manette. Relevé sur les pistolets du jeu (log de la 0.18.0) : direction
+// du canon et haut de l'arme dans les axes de l'os de la main, gauche puis droite.
+constexpr float kRestForward[2][3] = {{-0.60f, -0.73f, 0.34f}, {0.59f, -0.73f, 0.34f}};
+constexpr float kRestUp[2][3] = {{-0.14f, 0.51f, 0.85f}, {-0.11f, 0.34f, 0.93f}};
+Grip g_restGrip[2];
+float g_meleeTilt = 0.0f; // arme blanche : inclinaison vers l'avant, en radians
+bool g_restShown = false;
+// Poing de chaque main dans le monde après la dernière pose (pour les coups portés au geste)
+float g_fist[2][3]{};
+ULONGLONG g_fistTick[2]{};
+constexpr float kFistAhead = 0.09f;         // du poignet aux phalanges, le long de l'avant-bras
+constexpr ULONGLONG kFistMaxAgeMs = 150;
 
 float g_locals[kMaxBones * kFloatsPerBone];
 bool g_posed[2]{};
@@ -337,10 +351,9 @@ struct Skeleton {
 // Mesure, sur la pose de l'animation, comment l'arme est tenue dans la main
 void MeasureGrip(uint8_t* character, const Skeleton& skeleton, int hand)
 {
-    const bool armed = hand == 1 ? player::HoldingWeapon() : player::DualWielding();
     const int slot = skeleton.Slot(g_arms[hand].hand);
-    if (!armed || slot < 0)
-        return; // mains vides : on garde la dernière arme mesurée
+    if (slot < 0)
+        return;
     float muzzlePos[3]{NAN, NAN, NAN}, muzzleOrient[9];
     for (float& value : muzzleOrient)
         value = NAN;
@@ -388,9 +401,11 @@ void MeasureGrip(uint8_t* character, const Skeleton& skeleton, int hand)
 }
 
 // Pose un bras dans g_locals. target : où doit arriver le poignet, dans le repère du personnage.
+// held : comment la main tient son arme (nullptr : main laissée à l'animation). aligned : arme à
+// feu, sa bouche est posée sur le rayon de visée ; sinon le poignet va à la manette.
 bool PoseArm(const Skeleton& skeleton, int hand, const float* otherShoulder, const float gripWorld[3],
              const float originWorld[3], const float aimOrient[9], const float* root, const float* rootOrient,
-             float wristTarget[3])
+             const Grip* held, bool aligned, float wristTarget[3])
 {
     const Arm& arm = g_arms[hand];
     const int slots[6] = {skeleton.Slot(arm.shoulder),       skeleton.Slot(arm.elbow),       skeleton.Slot(arm.hand),
@@ -403,16 +418,19 @@ bool PoseArm(const Skeleton& skeleton, int hand, const float* otherShoulder, con
     const float* wrist = skeleton.Matrix(slots[2]);
 
     // Orientation voulue de la main et position voulue du poignet, dans le monde
-    const Grip& grip = g_grip[hand];
     float handWorld[9];
     float wristWorld[3]{gripWorld[0], gripWorld[1], gripWorld[2]};
-    if (grip.valid) {
+    if (held) {
         // Le canon prend l'orientation du rayon de visée : main = (canon dans la main)^-1 x rayon
+        const Grip& grip = *held;
         for (int j = 0; j < 3; ++j)
             for (int k = 0; k < 3; ++k)
                 handWorld[j * 3 + k] = grip.k[j] * aimOrient[k] + grip.k[3 + j] * aimOrient[3 + k] +
                                        grip.k[6 + j] * aimOrient[6 + k];
+    }
+    if (held && aligned) {
         // Bouche du canon sur le rayon, au plus près de là où la tient la vraie main
+        const Grip& grip = *held;
         float muzzle[3], onRay[3];
         for (int k = 0; k < 3; ++k)
             muzzle[k] = grip.offset[0] * handWorld[k] + grip.offset[1] * handWorld[3 + k] + grip.offset[2] * handWorld[6 + k];
@@ -498,7 +516,7 @@ bool PoseArm(const Skeleton& skeleton, int hand, const float* otherShoulder, con
     UnitAxes(skeleton.Matrix(slots[5]), axes);
     RotateAxes(r1, axes, scratch);
     RotateAxes(r2, scratch, handParentNew);
-    if (grip.valid) {
+    if (held) {
         for (int axis = 0; axis < 3; ++axis)
             for (int k = 0; k < 3; ++k)
                 handNew[axis * 3 + k] = Dot(handWorld + axis * 3, rootOrient + k * 3);
@@ -702,10 +720,38 @@ void PoseArms(uint8_t* character)
     if (!tracked[0] && !tracked[1])
         return Skip(5, "manettes non suivies");
 
-    // Armes dans les mains (la mesure ne dépend pas de la pose : l'arme est fixe dans la main)
-    for (int hand = 0; hand < 2; ++hand)
-        if (tracked[hand])
+    // Ce que tient chaque main. Arme à feu (la gauche n'en a une que tenue en double) : sa prise
+    // est mesurée, la mesure ne dépend pas de la pose puisque l'arme est fixe dans la main. Main
+    // vide ou arme blanche : main tenue comme la manette.
+    const int meleeAttack = player::HeldMeleeAttack();
+    const bool firearm[2] = {meleeAttack == 0xFF && player::DualWielding(), meleeAttack == 0xFF};
+    const Grip* held[2]{};
+    float aim[2][9];
+    for (int hand = 0; hand < 2; ++hand) {
+        if (!tracked[hand])
+            continue;
+        memcpy(aim[hand], orient[hand], sizeof(aim[hand]));
+        if (firearm[hand]) {
             MeasureGrip(character, skeleton, hand);
+            held[hand] = g_grip[hand].valid ? &g_grip[hand] : nullptr;
+            continue;
+        }
+        held[hand] = &g_restGrip[hand];
+        // Arme blanche (main droite) : inclinée vers l'avant de l'angle réglé, autour de la droite
+        // de la manette (la lame, à peu près le haut de la main, se couche vers où l'on pointe)
+        if (hand == 1 && meleeAttack >= 0 && g_meleeTilt != 0.0f) {
+            const float c = std::cos(g_meleeTilt), s = std::sin(g_meleeTilt);
+            for (int k = 0; k < 3; ++k) {
+                const float up = orient[hand][3 + k], forward = orient[hand][6 + k];
+                aim[hand][3 + k] = up * c + forward * s;
+                aim[hand][6 + k] = forward * c - up * s;
+            }
+        }
+    }
+    if (!g_restShown && (held[0] == &g_restGrip[0] || held[1] == &g_restGrip[1])) {
+        g_restShown = true;
+        LOG_ENGINE("mains : main vide ou arme blanche, la main prend l'attitude de la manette (prise d'un pistolet)");
+    }
 
     if (twisted)
         g_getPose(skeleton.instance, g_locals);
@@ -716,7 +762,7 @@ void PoseArms(uint8_t* character)
             continue;
         const int other = shoulderSlots[1 - hand];
         g_posed[hand] = PoseArm(skeleton, hand, other >= 0 ? skeleton.Matrix(other) + 9 : nullptr, grip[hand],
-                                origin[hand], orient[hand], root, rootOrient, targets[hand]);
+                                origin[hand], aim[hand], root, rootOrient, held[hand], firearm[hand], targets[hand]);
     }
     if (!g_posed[0] && !g_posed[1])
         return Skip(6, "cible ou os des bras inutilisables");
@@ -739,11 +785,27 @@ void PoseArms(uint8_t* character)
         const float error = std::sqrt(Dot(delta, delta));
         if (error > g_worstError)
             g_worstError = error;
+        // Poing dans le monde : au bout de l'avant-bras, un peu après le poignet
+        const int elbowSlot = skeleton.Slot(g_arms[hand].elbow);
+        if (elbowSlot >= 0) {
+            const float* elbow = skeleton.Matrix(elbowSlot) + 9;
+            float along[3] = {wrist[0] - elbow[0], wrist[1] - elbow[1], wrist[2] - elbow[2]};
+            if (Normalize(along)) {
+                for (int k = 0; k < 3; ++k) {
+                    const float local[3] = {wrist[0] + kFistAhead * along[0], wrist[1] + kFistAhead * along[1],
+                                            wrist[2] + kFistAhead * along[2]};
+                    g_fist[hand][k] = root[k] + local[0] * rootOrient[k] + local[1] * rootOrient[3 + k] +
+                                      local[2] * rootOrient[6 + k];
+                }
+                g_fistTick[hand] = GetTickCount64();
+            }
+        }
         if (!g_shown[hand]) {
             g_shown[hand] = true;
             LOG_ENGINE("mains : bras %s pose sur la manette (poignet a %.3f m de sa cible apres la pose%s)",
                        hand ? "droit" : "gauche", error,
-                       g_grip[hand].valid ? ", arme alignee sur le rayon de visee" : ", main sans arme mesuree");
+                       firearm[hand] ? (held[hand] ? ", arme alignee sur le rayon de visee" : ", arme pas encore mesuree")
+                                     : ", main tenue comme la manette");
         }
     }
 }
@@ -793,6 +855,21 @@ bool Install(FrameFn frame)
         return false;
     }
     g_frameFn = frame;
+    // Prises de repos : repère (droite, haut, avant) du canon dans les axes de la main
+    for (int hand = 0; hand < 2; ++hand) {
+        float forward[3], up[3], right[3];
+        memcpy(forward, kRestForward[hand], sizeof(forward));
+        Normalize(forward);
+        Cross(kRestUp[hand], forward, right);
+        Normalize(right);
+        Cross(forward, right, up);
+        Grip& grip = g_restGrip[hand];
+        memcpy(grip.k, right, sizeof(right));
+        memcpy(grip.k + 3, up, sizeof(up));
+        memcpy(grip.k + 6, forward, sizeof(forward));
+        grip.offset[0] = grip.offset[1] = grip.offset[2] = 0.0f;
+        grip.valid = true;
+    }
     MH_STATUS st =
         MH_CreateHook(site, reinterpret_cast<void*>(&HkLimbTarget), reinterpret_cast<void**>(&g_limbTarget));
     if (st == MH_OK)
@@ -827,6 +904,19 @@ void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3],
     memcpy(g_eyeFromRoot, eyeFromRoot, sizeof(g_eyeFromRoot));
     memcpy(g_headRight, headRight, sizeof(g_headRight));
     g_torsoMax = torsoMaxDegrees > 0.0f ? (torsoMaxDegrees > 180.0f ? 180.0f : torsoMaxDegrees) * 0.01745329f : 0.0f;
+}
+
+void SetMeleeTilt(float degrees)
+{
+    g_meleeTilt = degrees >= -90.0f && degrees <= 90.0f ? degrees * 0.01745329f : 0.0f;
+}
+
+bool Fist(int hand, float world[3])
+{
+    if (hand < 0 || hand > 1 || !g_fistTick[hand] || GetTickCount64() - g_fistTick[hand] > kFistMaxAgeMs)
+        return false;
+    memcpy(world, g_fist[hand], sizeof(g_fist[hand]));
+    return true;
 }
 
 void TakeStats(unsigned posed[2], float* worstError, unsigned* torso, float* torsoWorstDegrees)

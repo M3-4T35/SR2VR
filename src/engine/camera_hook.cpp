@@ -72,6 +72,7 @@
 #include "engine/controls.h"
 #include "engine/hands.h"
 #include "engine/hud.h"
+#include "engine/melee.h"
 #include "engine/player.h"
 #include "input/actions.h"
 #include "util/config.h"
@@ -194,6 +195,7 @@ LARGE_INTEGER g_headTime{};
 float g_headHeight = 0.0f; // relevé : hauteur de la tête au-dessus de la racine
 float g_eyeFromRoot[3]{};  // des pieds du personnage à la caméra à la première personne
 bool g_handsReady = false; // engine::hands installé
+bool g_meleeReady = false; // engine::melee installé
 // Orientation calculée par le jeu à la dernière mise à jour, lue aussi par le thread du rendu
 std::mutex g_gameMutex;
 float g_gameOrient[9]{};
@@ -280,6 +282,9 @@ struct Settings {
     int laser = 1;
     bool handArms = false;       // les bras du personnage sont amenés aux manettes
     float torsoMax = 90.0f;      // le buste se tourne vers le regard jusqu'à cet angle, en degrés (0 = non)
+    bool melee = true;           // coups portés au geste (poings, armes blanches)
+    float meleeSpeed = 1.8f;     // vitesse de la main qui fait d'un geste un coup, en m/s
+    float meleeTilt = 0.0f;      // arme blanche : inclinaison de la main vers l'avant, en degrés
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -327,6 +332,13 @@ void ReadConfig()
     s.torsoMax = config::Float("Hands", "torso", 90.0f);
     if (!(s.torsoMax >= 0.0f && s.torsoMax <= 180.0f))
         s.torsoMax = 90.0f;
+    s.melee = config::Int("Melee", "enabled", 1) != 0;
+    s.meleeSpeed = config::Float("Melee", "speed", 1.8f);
+    if (!(s.meleeSpeed >= 0.5f && s.meleeSpeed <= 10.0f))
+        s.meleeSpeed = 1.8f;
+    s.meleeTilt = config::Float("Melee", "weapon_tilt", 0.0f);
+    if (!(s.meleeTilt >= -90.0f && s.meleeTilt <= 90.0f))
+        s.meleeTilt = 0.0f;
     s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
     s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
     s.fpUp = config::Float("FirstPerson", "up", 0.06f);
@@ -789,7 +801,8 @@ void __cdecl HkUpdateCamera()
             float aimQuat[4], aimOffset[3];
             aimSource = s.handAim && xr::GetAimRay(hand, aimQuat, aimOffset) ? 2 + hand : 1;
         }
-        const bool armed = g_aimAllowed && s.handAim && (s.laser == 1 || s.laser == 2) && player::HoldingWeapon();
+        // (une arme blanche ne vise pas : pas de repère)
+        const bool armed = g_aimAllowed && s.handAim && (s.laser == 1 || s.laser == 2) && player::HeldMeleeAttack() == 0xFF;
         for (int hand = 0; hand < 2; ++hand) {
             aim::Sight sight;
             const bool visible = armed && aim::GetSight(hand, &sight);
@@ -810,7 +823,11 @@ void __cdecl HkUpdateCamera()
     if (g_handsReady) {
         g_handsAllowed = s.handArms && firstPerson && !g_inVehicle && tracked;
         hands::SetFrame(g_handsAllowed, g_eyeFromRoot, headed ? g_written : game, s.torsoMax);
+        hands::SetMeleeTilt(s.meleeTilt);
     }
+    // Coups au geste : seulement quand les bras suivent les manettes
+    if (g_meleeReady)
+        melee::SetFrame(g_handsReady && g_handsAllowed && s.melee, s.meleeSpeed);
     // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
     const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
     if (shownView != g_lastFirstPerson && state == kPlaying) {
@@ -878,6 +895,15 @@ void __cdecl HkUpdateCamera()
                 LOG_ENGINE("  mains : bras gauche pose sur %u images, bras droit sur %u, plus grand ecart poignet - cible "
                            "%.3f m ; buste tourne sur %u images, jusqu'a %.0f degres",
                            posed[0], posed[1], worst, torso, torsoWorst);
+        }
+        if (g_meleeReady) {
+            melee::Stats m;
+            melee::TakeStats(&m);
+            if (m.swings[0] + m.swings[1])
+                LOG_ENGINE("  melee : %u geste(s) de la main gauche (%u touche(s), %u dans le decor), %u de la droite "
+                           "(%u, %u) ; main la plus rapide %.1f m/s, seuil %.1f",
+                           m.swings[0], m.hits[0], m.world[0], m.swings[1], m.hits[1], m.world[1], m.fastest,
+                           s.meleeSpeed);
         }
         if (firstPerson)
             LOG_ENGINE("  premiere personne : tete a %.2f m au-dessus de la racine, camera du jeu a %.2f m des yeux",
@@ -1214,6 +1240,7 @@ bool InstallCameraHook()
             LOG_ENGINE("table des objets introuvable dans UpdateCamera : vehicules non reconnus");
         g_hudReady = hud::Install();
         g_handsReady = hands::Install(&HandFrame);
+        g_meleeReady = g_handsReady && melee::Install();
         g_aimReady = aim::Install(g_pos, g_orient, &AimRay);
         controls::Install();
         LOG_ENGINE("mode de camera du jeu : %s", g_cameraMode ? "trouve" : "introuvable (premiere personne dans tous les modes)");
@@ -1241,6 +1268,7 @@ void RemoveCameraHook()
     }
     g_updateCameraTarget = g_getFovTarget = g_renderFrameTarget = nullptr;
     hands::Remove();
+    melee::Remove();
     aim::Remove();
     controls::Remove();
     g_aimReady = false;

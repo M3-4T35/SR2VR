@@ -41,6 +41,11 @@ bool DualWielding();
 // mains vides.
 bool WeaponInfo(int* weaponClass, float* range);
 
+// Attaque de mêlée principale de l'arme en main (description+0x2BC, numéro dans la table des
+// attaques de melee.xtbl) : -1 les mains vides, 0xFF pour une arme à feu (elle n'a qu'un coup de
+// crosse en attaque secondaire), autre valeur pour une arme blanche (sabre, batte, couteau...).
+int HeldMeleeAttack();
+
 // Case d'inventaire de l'arme en main (description en +8, munitions du chargeur en +0x10),
 // nullptr les mains vides
 void* HeldWeaponSlot();

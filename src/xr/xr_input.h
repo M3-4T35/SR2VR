@@ -99,6 +99,10 @@ private:
     bool aimPoseValid_[2]{};
     XrAction gripPose_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // gauche, droite
     XrSpace gripSpace_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
+    // Vitesse des mains (coups portés au geste) : celle du runtime, sinon l'écart de position
+    XrVector3f gripLast_[2]{};
+    bool gripSeen_[2]{};
+    XrAction haptic_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // vibration, gauche et droite
     bool ready_ = false;
     bool announced_ = false;
     int gameplayShown_ = -1; // dernier mode annoncé dans le log (0 menus, 1 partie)

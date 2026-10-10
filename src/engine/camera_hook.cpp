@@ -22,8 +22,11 @@
 // en file et ressort au Present de la même image : au Present de l'image N, la caméra de
 // l'image N+1 peut déjà avoir été préparée.
 //
-// Jeu en pause (menu de pause et autres menus qui arrêtent le jeu) : on ne touche à rien, et
-// l'image n'a pas de vue, donc elle s'affiche sur l'écran virtuel.
+// Menus : on ne touche à rien, et l'image n'a pas de vue, donc elle s'affiche sur l'écran
+// virtuel. Deux cas : le jeu en pause (menu de pause et autres menus qui arrêtent le jeu), et
+// les interfaces qui laissent le jeu tourner (garde-robe, garage, boutiques, personnalisation
+// de la planque ou du gang), reconnues à un octet que leur fonction d'entrée commune met à 0
+// et leur fonction de sortie à 1.
 //
 // Aucune adresse codée en dur : fonctions trouvées par signature, adresses des variables lues
 // dans leur code.
@@ -31,6 +34,7 @@
 #include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
+#include "xr/xr_input.h"
 #include "xr/xr_session.h"
 
 #include <MinHook.h>
@@ -63,6 +67,10 @@ constexpr char kRenderCameraSig[] =
 // sub [compteur de pauses],1 ; cmp esi,-1. Le jeu est en pause tant que le compteur est > 0.
 constexpr char kUnpauseSig[] =
     "83 3D ?? ?? ?? ?? 00 0F 84 ?? ?? ?? ?? 68 ?? ?? ?? ?? FF 15 ?? ?? ?? ?? 83 2D ?? ?? ?? ?? 01 83 FE FF";
+// Fonction d'entrée commune des magasins et des interfaces de planque : or ecx,-1 ; add esp,4 ;
+// cmp eax,esi ; mov byte [jeu libre],0 ; mov [ebp+...],ecx. La fonction de sortie y remet 1.
+constexpr char kStoreEnterSig[] = "83 C9 FF 83 C4 04 3B C6 C6 05 ?? ?? ?? ?? 00 89 8D";
+constexpr int kFreePlayOffset = 10;     // opérande du « mov byte »
 constexpr int kRenderOrientOffset = 11; // opérande du « mov edi »
 constexpr int kGetFovCallOffset = 17;   // l'instruction call GetFOV
 constexpr int kRenderFovOffset = 29;    // opérande du « fstp »
@@ -80,10 +88,17 @@ float* g_pos = nullptr;          // simulation : x, y, z
 float* g_renderOrient = nullptr; // rendu : rvec, uvec, fvec
 float* g_renderPos = nullptr;    // rendu : x, y, z (juste avant l'orientation)
 const int* g_pauseCount = nullptr; // nombre de pauses en cours (0 : le jeu tourne)
+const uint8_t* g_freePlay = nullptr; // 1 en jeu, 0 dans un magasin ou une interface de planque
 
 bool Paused()
 {
     return g_pauseCount && *g_pauseCount > 0;
+}
+
+// Garde-robe, garage, boutique, personnalisation : le jeu tourne, mais c'est un menu
+bool InInterface()
+{
+    return g_freePlay && *g_freePlay == 0;
 }
 
 // --- Simulation -----------------------------------------------------------------------
@@ -138,6 +153,7 @@ struct Settings {
     float worldScale = 1.0f;   // unités du jeu par mètre
     float ipdScale = 1.0f;     // correction de l'écart entre les yeux
     bool swapEyes = false;
+    bool interfaceScreen = true; // magasins et interfaces de planque sur l'écran virtuel
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -172,6 +188,7 @@ void ReadConfig()
     if (!(s.ipdScale >= 0.0f && s.ipdScale < 10.0f))
         s.ipdScale = 1.0f;
     s.swapEyes = config::Int("Stereo", "swap_eyes", 0) != 0;
+    s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
     std::lock_guard lock(g_settingsMutex);
     g_settings = s;
 }
@@ -260,7 +277,17 @@ void HeadedOrientation(const float game[9], const float quat[4], const Settings&
 
 // --- Simulation : mise à jour de la caméra -----------------------------------------------
 
+// État du jeu : 0 en partie, 1 en pause, 2 dans une interface qui laisse le jeu tourner
+enum : int { kPlaying = 0, kPaused = 1, kInterface = 2 };
+int GameState(const Settings& s)
+{
+    if (Paused())
+        return kPaused;
+    return s.interfaceScreen && InInterface() ? kInterface : kPlaying;
+}
+
 ULONGLONG g_lastStats = 0;
+int g_lastState = -1;
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -293,8 +320,14 @@ void __cdecl HkUpdateCamera()
     // Côté simulation aussi, pour que le culling, le son et la visée suivent le regard
     float quat[4];
     const bool tracked = xr::GetHeadPose(quat, nullptr);
-    const bool paused = Paused();
-    if (tracked && s.headTracking && !paused) {
+    const int state = GameState(s);
+    if (state != g_lastState) {
+        static const char* const kNames[] = {"en partie", "en pause : ecran virtuel",
+                                             "interface ouverte (garde-robe, garage, boutique...) : ecran virtuel"};
+        LOG_ENGINE("jeu : %s", kNames[state]);
+        g_lastState = state;
+    }
+    if (tracked && s.headTracking && state == kPlaying) {
         HeadedOrientation(game, quat, s, g_written);
         memcpy(g_orient, g_written, sizeof(g_written));
         g_applied = true;
@@ -309,7 +342,8 @@ void __cdecl HkUpdateCamera()
                        "horizon %s, %s%s",
                        static_cast<double>(g_calls - g_callsAtLastStats) / seconds, GetCurrentThreadId(),
                        static_cast<double>(copies - g_copiesAtLastStats) / seconds, s.levelHorizon ? "a plat" : "du jeu",
-                       s.stereo ? "relief (un oeil par image)" : "sans relief", paused ? ", JEU EN PAUSE" : "");
+                       s.stereo ? "relief (un oeil par image)" : "sans relief",
+                       state == kPaused ? ", JEU EN PAUSE" : state == kInterface ? ", INTERFACE DU JEU OUVERTE" : "");
             LOG_ENGINE("  vues en attente au Present : aucune %u, une %u, deux %u ; images sans pose de tete %u, "
                        "vues perdues %u",
                        g_pendingAtPresent[0].exchange(0), g_pendingAtPresent[1].exchange(0),
@@ -346,11 +380,14 @@ void OnRenderCamera(double* fov)
         LOG_ENGINE("camera de rendu : premiere image preparee sur le thread %lu", GetCurrentThreadId());
     PendingView view;
     view.tick = GetTickCount64();
-    if (Paused()) {
-        // Menu de pause : caméra et champ de vue du jeu, image sur l'écran virtuel
+    if (GameState(s) != kPlaying) {
+        // Menu de pause, magasin, garde-robe, garage : caméra et champ de vue du jeu, image sur
+        // l'écran virtuel
         PushView(view);
         return;
     }
+    // Une image de jeu est en préparation : les manettes pilotent le personnage, pas un menu
+    xr::NoteGameplayFrame();
     if (s.hfov > 0.0f)
         *fov = s.hfov;
 
@@ -399,8 +436,8 @@ double __cdecl HkGetFov()
     double fov = g_getFov();
     if (_ReturnAddress() == g_renderReturn)
         OnRenderCamera(&fov);
-    else if (const float hfov = CurrentSettings().hfov; hfov > 0.0f && !Paused())
-        fov = hfov; // même champ de vue pour les autres appelants (projection 3D -> écran)
+    else if (const Settings s = CurrentSettings(); s.hfov > 0.0f && GameState(s) == kPlaying)
+        fov = s.hfov; // même champ de vue pour les autres appelants (projection 3D -> écran)
     return fov;
 }
 
@@ -473,6 +510,15 @@ bool InstallCameraHook()
         LOG_ENGINE("compteur de pauses : exe+0x%lX (vaut %d)", rel(g_pauseCount), *g_pauseCount);
     } else {
         LOG_ENGINE("compteur de pauses introuvable : le menu de pause restera en affichage immersif");
+    }
+
+    // Magasins et interfaces de planque
+    if (auto* enter = static_cast<uint8_t*>(pattern::Find("entree de magasin", kStoreEnterSig))) {
+        g_freePlay = reinterpret_cast<const uint8_t*>(absolute(enter + kFreePlayOffset));
+        LOG_ENGINE("interfaces du jeu (magasins, garde-robe, garage) : octet exe+0x%lX (vaut %d, 1 = en jeu)",
+                   rel(g_freePlay), static_cast<int>(*g_freePlay));
+    } else {
+        LOG_ENGINE("octet des interfaces introuvable : magasins, garde-robe et garage resteront en affichage immersif");
     }
 
     if (!g_updateCameraTarget && !g_getFovTarget) {

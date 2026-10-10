@@ -51,31 +51,71 @@ HWND GameWindow()
     return g_window;
 }
 
-bool SendKey(WORD vk, bool down)
+namespace {
+
+// Le jeu est-il au premier plan ? Sinon on le signale une fois et on tente de l'y remettre.
+bool GameInFront()
 {
-    if (down) {
-        HWND game = GameWindow();
-        if (!game || GetForegroundWindow() != game) {
-            if (!g_warned) {
-                LOG_CORE("touches : la fenetre du jeu n'est pas au premier plan, appui ignore (cliquer dans le jeu)");
-                g_warned = true;
-            }
-            if (game)
-                SetForegroundWindow(game);
-            return false;
-        }
+    HWND game = GameWindow();
+    if (game && GetForegroundWindow() == game) {
         g_warned = false;
+        return true;
     }
-    INPUT in{};
-    in.type = INPUT_KEYBOARD;
-    in.ki.wVk = vk;
-    in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)); // gère aussi VK_LSHIFT / VK_LCONTROL
-    in.ki.dwFlags = (IsExtended(vk) ? KEYEVENTF_EXTENDEDKEY : 0u) | (down ? 0u : KEYEVENTF_KEYUP);
+    if (!g_warned) {
+        LOG_CORE("touches : la fenetre du jeu n'est pas au premier plan, entrees ignorees (cliquer dans le jeu)");
+        g_warned = true;
+    }
+    if (game)
+        SetForegroundWindow(game);
+    return false;
+}
+
+bool Send(INPUT& in, bool down)
+{
+    // Un relâchement part toujours : la touche a été enfoncée par nous
+    if (down && !GameInFront())
+        return false;
     if (SendInput(1, &in, sizeof(in)) != 1)
         return false;
     if (down)
         ++g_sent;
     return true;
+}
+
+} // namespace
+
+bool SendKey(WORD vk, bool down)
+{
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wVk = vk;
+    in.ki.wScan = static_cast<WORD>(MapVirtualKeyW(vk, MAPVK_VK_TO_VSC)); // gère aussi VK_LSHIFT / VK_LCONTROL
+    in.ki.dwFlags = (IsExtended(vk) ? KEYEVENTF_EXTENDEDKEY : 0u) | (down ? 0u : KEYEVENTF_KEYUP);
+    return Send(in, down);
+}
+
+bool SendScan(WORD scanCode, bool down)
+{
+    INPUT in{};
+    in.type = INPUT_KEYBOARD;
+    in.ki.wScan = scanCode;
+    in.ki.dwFlags = KEYEVENTF_SCANCODE | (down ? 0u : KEYEVENTF_KEYUP);
+    return Send(in, down);
+}
+
+bool MoveMouse(int dx, int dy)
+{
+    if (!dx && !dy)
+        return true;
+    HWND game = GameWindow();
+    if (!game || GetForegroundWindow() != game)
+        return false;
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dx = dx;
+    in.mi.dy = dy;
+    in.mi.dwFlags = MOUSEEVENTF_MOVE;
+    return SendInput(1, &in, sizeof(in)) == 1;
 }
 
 unsigned TakeSentCount()

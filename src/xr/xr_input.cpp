@@ -1,7 +1,9 @@
 #include "xr/xr_input.h"
 #include "input/keys.h"
+#include "util/config.h"
 #include "util/log.h"
 
+#include <atomic>
 #include <cmath>
 #include <cstring>
 #include <vector>
@@ -9,12 +11,23 @@
 namespace xr {
 namespace {
 
-// Stick : engagé au-delà de 0,7, relâché en dessous de 0,4 (évite les rebonds)
+// Menus : stick engagé au-delà de 0,7, relâché en dessous de 0,4 (évite les rebonds)
 constexpr float kEngage = 0.7f;
 constexpr float kRelease = 0.4f;
 // Répétition d'une flèche tenue, comme un clavier
 constexpr ULONGLONG kRepeatDelayMs = 400;
 constexpr ULONGLONG kRepeatPeriodMs = 130;
+// Partie : une direction de déplacement s'enfonce au-delà de 0,45 et se relâche sous 0,3
+constexpr float kMoveEngage = 0.45f;
+constexpr float kMoveRelease = 0.3f;
+constexpr float kTurnDeadzone = 0.15f;
+// Sans image de jeu préparée depuis ce délai, on est dans un menu
+constexpr ULONGLONG kGameplayTimeoutMs = 300;
+
+// Positions des touches (codes de balayage) : W, S, A, D et E d'un clavier QWERTY
+constexpr WORD kScanForward = 0x11, kScanBack = 0x1F, kScanLeft = 0x1E, kScanRight = 0x20, kScanInteract = 0x12;
+
+std::atomic<ULONGLONG> g_gameplayTick{0};
 
 XrPath ToPath(XrInstance instance, const char* text)
 {
@@ -23,8 +36,11 @@ XrPath ToPath(XrInstance instance, const char* text)
     return path;
 }
 
+// Actions, dans l'ordre du tableau `actions` de Init
+enum { kLeftStick, kRightStick, kConfirm, kBack, kLeftTrigger, kRightTrigger, kRightGrip, kActionCount };
+
 struct Binding {
-    int action; // 0 naviguer, 1 valider, 2 retour, 3 gâchette gauche, 4 gâchette droite
+    int action;
     const char* path;
 };
 
@@ -37,42 +53,46 @@ struct Profile {
 // spécification OpenXR ; un profil refusé par le runtime est signalé dans le log.
 const Profile kProfiles[] = {
     {"/interaction_profiles/oculus/touch_controller",
-     {{0, "/user/hand/left/input/thumbstick"},
-      {0, "/user/hand/right/input/thumbstick"},
-      {1, "/user/hand/right/input/a/click"},
-      {2, "/user/hand/right/input/b/click"},
-      {2, "/user/hand/left/input/menu/click"},
-      {3, "/user/hand/left/input/trigger/value"},
-      {4, "/user/hand/right/input/trigger/value"}}},
+     {{kLeftStick, "/user/hand/left/input/thumbstick"},
+      {kRightStick, "/user/hand/right/input/thumbstick"},
+      {kConfirm, "/user/hand/right/input/a/click"},
+      {kBack, "/user/hand/right/input/b/click"},
+      {kBack, "/user/hand/left/input/menu/click"},
+      {kLeftTrigger, "/user/hand/left/input/trigger/value"},
+      {kRightTrigger, "/user/hand/right/input/trigger/value"},
+      {kRightGrip, "/user/hand/right/input/squeeze/value"}}},
     {"/interaction_profiles/valve/index_controller",
-     {{0, "/user/hand/left/input/thumbstick"},
-      {0, "/user/hand/right/input/thumbstick"},
-      {1, "/user/hand/right/input/a/click"},
-      {2, "/user/hand/right/input/b/click"},
-      {2, "/user/hand/left/input/b/click"},
-      {3, "/user/hand/left/input/trigger/value"},
-      {4, "/user/hand/right/input/trigger/value"}}},
+     {{kLeftStick, "/user/hand/left/input/thumbstick"},
+      {kRightStick, "/user/hand/right/input/thumbstick"},
+      {kConfirm, "/user/hand/right/input/a/click"},
+      {kBack, "/user/hand/right/input/b/click"},
+      {kBack, "/user/hand/left/input/b/click"},
+      {kLeftTrigger, "/user/hand/left/input/trigger/value"},
+      {kRightTrigger, "/user/hand/right/input/trigger/value"},
+      {kRightGrip, "/user/hand/right/input/squeeze/value"}}},
     {"/interaction_profiles/microsoft/motion_controller",
-     {{0, "/user/hand/left/input/thumbstick"},
-      {0, "/user/hand/right/input/thumbstick"},
-      {1, "/user/hand/right/input/trackpad/click"},
-      {2, "/user/hand/left/input/menu/click"},
-      {2, "/user/hand/right/input/menu/click"},
-      {3, "/user/hand/left/input/trigger/value"},
-      {4, "/user/hand/right/input/trigger/value"}}},
+     {{kLeftStick, "/user/hand/left/input/thumbstick"},
+      {kRightStick, "/user/hand/right/input/thumbstick"},
+      {kConfirm, "/user/hand/right/input/trackpad/click"},
+      {kBack, "/user/hand/left/input/menu/click"},
+      {kBack, "/user/hand/right/input/menu/click"},
+      {kLeftTrigger, "/user/hand/left/input/trigger/value"},
+      {kRightTrigger, "/user/hand/right/input/trigger/value"},
+      {kRightGrip, "/user/hand/right/input/squeeze/click"}}},
     {"/interaction_profiles/htc/vive_controller",
-     {{0, "/user/hand/left/input/trackpad"},
-      {0, "/user/hand/right/input/trackpad"},
-      {1, "/user/hand/right/input/trackpad/click"},
-      {2, "/user/hand/left/input/menu/click"},
-      {2, "/user/hand/right/input/menu/click"},
-      {3, "/user/hand/left/input/trigger/value"},
-      {4, "/user/hand/right/input/trigger/value"}}},
+     {{kLeftStick, "/user/hand/left/input/trackpad"},
+      {kRightStick, "/user/hand/right/input/trackpad"},
+      {kConfirm, "/user/hand/right/input/trackpad/click"},
+      {kBack, "/user/hand/left/input/menu/click"},
+      {kBack, "/user/hand/right/input/menu/click"},
+      {kLeftTrigger, "/user/hand/left/input/trigger/value"},
+      {kRightTrigger, "/user/hand/right/input/trigger/value"},
+      {kRightGrip, "/user/hand/right/input/squeeze/click"}}},
     {"/interaction_profiles/khr/simple_controller",
-     {{1, "/user/hand/left/input/select/click"},
-      {1, "/user/hand/right/input/select/click"},
-      {2, "/user/hand/left/input/menu/click"},
-      {2, "/user/hand/right/input/menu/click"}}},
+     {{kConfirm, "/user/hand/left/input/select/click"},
+      {kConfirm, "/user/hand/right/input/select/click"},
+      {kBack, "/user/hand/left/input/menu/click"},
+      {kBack, "/user/hand/right/input/menu/click"}}},
 };
 
 bool CreateAction(XrActionSet set, XrActionType type, const char* name, const char* label, XrAction* action)
@@ -86,31 +106,54 @@ bool CreateAction(XrActionSet set, XrActionType type, const char* name, const ch
 
 } // namespace
 
+void NoteGameplayFrame()
+{
+    const ULONGLONG now = GetTickCount64();
+    g_gameplayTick = now ? now : 1;
+}
+
+void MenuInput::ReadConfig()
+{
+    turnSpeed_ = config::Float("Controls", "turn_speed", 1200.0f);
+    if (!(turnSpeed_ >= -20000.0f && turnSpeed_ <= 20000.0f))
+        turnSpeed_ = 1200.0f;
+}
+
 bool MenuInput::Init(XrInstance instance, XrSession session)
 {
-    arrows_[0].vk = VK_UP;
-    arrows_[1].vk = VK_DOWN;
-    arrows_[2].vk = VK_LEFT;
-    arrows_[3].vk = VK_RIGHT;
-    enter_.vk = VK_RETURN;
-    escape_.vk = VK_ESCAPE;
-    control_.vk = VK_LCONTROL;
-    shift_.vk = VK_LSHIFT;
+    const WORD arrowKeys[4] = {VK_UP, VK_DOWN, VK_LEFT, VK_RIGHT};
+    const WORD moveScans[4] = {kScanForward, kScanBack, kScanLeft, kScanRight};
+    for (int i = 0; i < 4; ++i) {
+        arrows_[i].code = arrowKeys[i];
+        move_[i].code = moveScans[i];
+        move_[i].scan = true;
+    }
+    enter_.code = VK_RETURN;
+    escape_.code = VK_ESCAPE;
+    control_.code = VK_LCONTROL;
+    shift_.code = VK_LSHIFT;
+    interact_.code = kScanInteract;
+    interact_.scan = true;
+    ReadConfig();
+    QueryPerformanceCounter(&lastUpdate_);
 
     XrActionSetCreateInfo si{XR_TYPE_ACTION_SET_CREATE_INFO};
-    strcpy_s(si.actionSetName, "menus");
-    strcpy_s(si.localizedActionSetName, "Menus");
+    strcpy_s(si.actionSetName, "sr2vr");
+    strcpy_s(si.localizedActionSetName, "Saints Row 2 VR");
     if (XR_FAILED(xrCreateActionSet(instance, &si, &set_)) ||
-        !CreateAction(set_, XR_ACTION_TYPE_VECTOR2F_INPUT, "navigate", "Naviguer (fleches)", &navigate_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_VECTOR2F_INPUT, "left_stick", "Se deplacer / naviguer", &leftStick_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_VECTOR2F_INPUT, "right_stick", "Tourner / naviguer", &rightStick_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "confirm", "Valider (Entree)", &confirm_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "back", "Retour (Echap)", &back_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_trigger", "Ctrl", &leftTrigger_) ||
-        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_trigger", "Maj", &rightTrigger_)) {
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_trigger", "Maj", &rightTrigger_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_grip", "Interagir (E)", &rightGrip_)) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
         return false;
     }
 
-    const XrAction actions[5] = {navigate_, confirm_, back_, leftTrigger_, rightTrigger_};
+    const XrAction actions[kActionCount] = {leftStick_, rightStick_, confirm_, back_, leftTrigger_, rightTrigger_,
+                                            rightGrip_};
     int accepted = 0;
     for (const Profile& profile : kProfiles) {
         std::vector<XrActionSuggestedBinding> suggested;
@@ -135,29 +178,32 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         return false;
     }
     ready_ = true;
-    LOG_XR("manettes : %d profil(s) acceptes ; stick = fleches, A = Entree, B ou menu gauche = Echap, "
-           "gachette gauche = Ctrl, gachette droite = Maj",
-           accepted);
+    LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%.0f px/s), "
+           "poignee droite = E. Menus : sticks = fleches. A = Entree, B ou menu gauche = Echap, gachettes = Ctrl / Maj",
+           accepted, turnSpeed_);
     return true;
 }
 
 void MenuInput::SetKey(Key& key, bool pressed, bool repeat)
 {
+    const auto send = [&key](bool down) {
+        return key.scan ? input::SendScan(key.code, down) : input::SendKey(key.code, down);
+    };
     const ULONGLONG now = GetTickCount64();
     if (pressed && !key.held) {
-        if (input::SendKey(key.vk, true)) {
+        if (send(true)) {
             key.held = true;
             key.nextRepeat = now + kRepeatDelayMs;
             if (!announced_) {
-                LOG_XR("manettes : premiere touche envoyee au jeu (code 0x%02X)", key.vk);
+                LOG_XR("manettes : premiere touche envoyee au jeu (%s 0x%02X)", key.scan ? "position" : "code", key.code);
                 announced_ = true;
             }
         }
     } else if (pressed && repeat && now >= key.nextRepeat) {
-        input::SendKey(key.vk, true); // nouvel appui sans relâchement, comme la répétition d'un clavier
+        send(true); // nouvel appui sans relâchement, comme la répétition d'un clavier
         key.nextRepeat = now + kRepeatPeriodMs;
     } else if (!pressed && key.held) {
-        input::SendKey(key.vk, false);
+        send(false);
         key.held = false;
     }
 }
@@ -166,21 +212,39 @@ void MenuInput::ReleaseAll()
 {
     for (Key& key : arrows_)
         SetKey(key, false, false);
+    for (Key& key : move_)
+        SetKey(key, false, false);
     SetKey(enter_, false, false);
     SetKey(escape_, false, false);
     SetKey(control_, false, false);
     SetKey(shift_, false, false);
+    SetKey(interact_, false, false);
     direction_ = -1;
+    turnRemainder_ = 0.0f;
 }
 
 void MenuInput::Update(XrSession session, bool focused)
 {
+    LARGE_INTEGER counter, frequency;
+    QueryPerformanceCounter(&counter);
+    QueryPerformanceFrequency(&frequency);
+    float dt = static_cast<float>(counter.QuadPart - lastUpdate_.QuadPart) / static_cast<float>(frequency.QuadPart);
+    lastUpdate_ = counter;
+    if (!(dt > 0.0f && dt < 0.1f))
+        dt = 0.0f; // premier appel ou reprise après une interruption
+
     if (!ready_)
         return;
     if (!focused) {
         ReleaseAll();
         return;
     }
+    const ULONGLONG now = GetTickCount64();
+    if (now - lastConfig_ >= 1000) {
+        lastConfig_ = now;
+        ReadConfig();
+    }
+
     XrActiveActionSet active{set_, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
     sync.countActiveActionSets = 1;
@@ -196,32 +260,82 @@ void MenuInput::Update(XrSession session, bool focused)
         gi.action = action;
         return XR_SUCCEEDED(xrGetActionStateBoolean(session, &gi, &button)) && button.isActive && button.currentState;
     };
+    const auto stick = [&](XrAction action, float* x, float* y) {
+        XrActionStateVector2f state{XR_TYPE_ACTION_STATE_VECTOR2F};
+        gi.action = action;
+        *x = *y = 0.0f;
+        if (XR_SUCCEEDED(xrGetActionStateVector2f(session, &gi, &state)) && state.isActive) {
+            *x = state.currentState.x;
+            *y = state.currentState.y;
+        }
+    };
+
     // Modificateurs d'abord : ils doivent être enfoncés avant la touche qu'ils accompagnent
     SetKey(control_, pressed(leftTrigger_), false);
     SetKey(shift_, pressed(rightTrigger_), false);
 
-    gi.action = navigate_;
-    XrActionStateVector2f stick{XR_TYPE_ACTION_STATE_VECTOR2F};
-    float x = 0.0f, y = 0.0f;
-    if (XR_SUCCEEDED(xrGetActionStateVector2f(session, &gi, &stick)) && stick.isActive) {
-        x = stick.currentState.x;
-        y = stick.currentState.y;
+    float lx, ly, rx, ry;
+    stick(leftStick_, &lx, &ly);
+    stick(rightStick_, &rx, &ry);
+
+    const ULONGLONG gameplayTick = g_gameplayTick;
+    const bool gameplay = gameplayTick && now >= gameplayTick && now - gameplayTick < kGameplayTimeoutMs;
+    if (static_cast<int>(gameplay) != gameplayShown_) {
+        LOG_XR("manettes : mode %s", gameplay ? "partie (deplacement, tourner, interagir)" : "menus (fleches)");
+        gameplayShown_ = gameplay;
     }
-    // Axe dominant ; la direction courante tient jusqu'à ce que le stick revienne vers le centre
-    const float ax = std::fabs(x), ay = std::fabs(y);
-    int wanted = -1;
-    if (ay >= ax && ay > kEngage)
-        wanted = y > 0.0f ? 0 : 1;
-    else if (ax > ay && ax > kEngage)
-        wanted = x < 0.0f ? 2 : 3;
-    if (wanted == -1 && direction_ != -1) {
-        const float along = direction_ < 2 ? ay : ax;
-        if (along > kRelease)
-            wanted = direction_;
+
+    if (gameplay) {
+        // Les flèches des menus sont relâchées
+        for (Key& key : arrows_)
+            SetKey(key, false, false);
+        direction_ = -1;
+
+        // Déplacement : chaque direction a sa touche, avec hystérésis ; les diagonales sont permises
+        const float axis[4] = {ly, -ly, -lx, lx}; // avant, arrière, gauche, droite
+        for (int i = 0; i < 4; ++i)
+            SetKey(move_[i], axis[i] > (move_[i].held ? kMoveRelease : kMoveEngage), false);
+
+        // Tourner : la souris se déplace à l'horizontale, proportionnellement au stick
+        float turn = 0.0f;
+        if (std::fabs(rx) > kTurnDeadzone)
+            turn = (rx - (rx > 0.0f ? kTurnDeadzone : -kTurnDeadzone)) / (1.0f - kTurnDeadzone);
+        turnRemainder_ += turn * turnSpeed_ * dt;
+        const int pixels = static_cast<int>(turnRemainder_);
+        if (pixels) {
+            input::MoveMouse(pixels, 0);
+            turnRemainder_ -= static_cast<float>(pixels);
+        }
+        if (turn == 0.0f)
+            turnRemainder_ = 0.0f;
+
+        SetKey(interact_, pressed(rightGrip_), false);
+    } else {
+        // Les touches de la partie sont relâchées
+        for (Key& key : move_)
+            SetKey(key, false, false);
+        SetKey(interact_, false, false);
+        turnRemainder_ = 0.0f;
+
+        // Menus : le stick le plus incliné donne une flèche. Axe dominant ; la direction
+        // courante tient jusqu'à ce que le stick revienne vers le centre.
+        const bool useRight = rx * rx + ry * ry > lx * lx + ly * ly;
+        const float x = useRight ? rx : lx, y = useRight ? ry : ly;
+        const float ax = std::fabs(x), ay = std::fabs(y);
+        int wanted = -1;
+        if (ay >= ax && ay > kEngage)
+            wanted = y > 0.0f ? 0 : 1;
+        else if (ax > ay && ax > kEngage)
+            wanted = x < 0.0f ? 2 : 3;
+        if (wanted == -1 && direction_ != -1) {
+            const float along = direction_ < 2 ? ay : ax;
+            if (along > kRelease)
+                wanted = direction_;
+        }
+        direction_ = wanted;
+        for (int i = 0; i < 4; ++i)
+            SetKey(arrows_[i], i == direction_, true);
     }
-    direction_ = wanted;
-    for (int i = 0; i < 4; ++i)
-        SetKey(arrows_[i], i == direction_, true);
 
     SetKey(enter_, pressed(confirm_), false);
     SetKey(escape_, pressed(back_), false);

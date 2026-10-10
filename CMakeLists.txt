@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # Dépendances vcpkg liées statiquement : la DLL est chargée par LoadLibrary depuis
 # build/, Windows ne chercherait pas ses DLL dépendantes à côté d'elle.
 set(VCPKG_TARGET_TRIPLET x86-windows-static CACHE STRING "")
-project(SR2VR VERSION 0.9.3 LANGUAGES CXX)
+project(SR2VR VERSION 0.10.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -25,6 +25,7 @@ add_library(sr2_vr SHARED
     src/util/config.cpp
     src/util/pattern.cpp
     src/engine/camera_hook.cpp
+    src/engine/player.cpp
     src/render/d3d9_hook.cpp
     src/render/frame_capture.cpp
     src/input/keys.cpp

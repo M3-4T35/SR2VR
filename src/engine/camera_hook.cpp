@@ -42,9 +42,18 @@
 // commune met à 0 et leur fonction de sortie à 1 ; les cinématiques, reconnues à l'octet que
 // leur lancement met à 1 et leur fin à 0 (« IsInCutscene » dans les sources de Juiced).
 //
+// Première personne ([FirstPerson] enabled=1). Après la mise à jour de la caméra par le jeu,
+// la position finale est remplacée par celle des yeux du personnage : la racine du joueur, plus
+// l'écart racine -> repère « head » de son squelette (filtré, pour ne pas subir le balancement
+// des animations), plus un petit décalage vers l'avant et vers le haut. L'orientation reste
+// celle de la caméra du jeu (son cap) composée avec la tête. Comme pour l'orientation, le jeu
+// retrouve sa propre position avant sa mise à jour suivante. La préparation de l'image recopie
+// la position finale dans la caméra de rendu : le rendu suit sans rien de plus.
+//
 // Aucune adresse codée en dur : fonctions trouvées par signature, adresses des variables lues
 // dans leur code.
 #include "engine/camera_hook.h"
+#include "engine/player.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
@@ -72,6 +81,9 @@ constexpr char kOrientCopySig[] = "B9 09 00 00 00 BE ?? ?? ?? ?? BF ?? ?? ?? ??"
 // Dans UpdateCamera : mov ecx,[pos.y] ; mov eax,[pos.x] ; mov edx,[pos.z] (position finale)
 constexpr char kPosReadSig[] = "8B 0D ?? ?? ?? ?? A1 ?? ?? ?? ?? 8B 15 ?? ?? ?? ??";
 constexpr size_t kFunctionSpan = 0x520;
+// Dans UpdateCamera : mov eax,[mode de caméra] ; lea ecx,[eax+eax*4] ; mov eax,[ecx*4+<table
+// des modes>] ; cmp eax,ebx
+constexpr char kCameraModeSig[] = "A1 ?? ?? ?? ?? 8D 0C 80 8B 04 8D ?? ?? ?? ?? 3B C3";
 // Début du rendu d'une image : la caméra finale est recopiée dans la caméra de rendu.
 // mov ecx,9 ; mov esi,<orientation finale> ; mov edi,<orientation de rendu> ; rep movsd ;
 // call GetFOV ; push <orientation de rendu> ; fstp [champ de vue de rendu] ; call ...
@@ -126,6 +138,8 @@ const int* g_pauseCount = nullptr; // nombre de pauses en cours (0 : le jeu tour
 const uint8_t* g_freePlay = nullptr; // 1 en jeu, 0 dans un magasin ou une interface de planque
 int* g_frameCounter = nullptr;       // compteur d'images du jeu (un cran par image de simulation)
 uint8_t* g_pendingCamera = nullptr;  // caméra en attente : demandes de la simulation au rendu
+const int* g_cameraMode = nullptr;   // mode de caméra du jeu (0 : caméra normale à la 3e personne)
+bool g_playerReady = false;          // engine::player installé
 
 bool Paused()
 {
@@ -148,6 +162,14 @@ bool InCutscene()
 // --- Simulation -----------------------------------------------------------------------
 float g_written[9]{}; // ce que nous avons écrit à la place de l'orientation du jeu
 bool g_applied = false;
+// Première personne : position du jeu mise de côté, position écrite à sa place
+float g_gamePos[3]{};
+float g_writtenPos[3]{};
+bool g_posApplied = false;
+float g_headOffset[3]{};  // écart racine -> tête, filtré
+bool g_headOffsetValid = false;
+LARGE_INTEGER g_headTime{};
+float g_headHeight = 0.0f; // relevé : hauteur de la tête au-dessus de la racine
 // Orientation calculée par le jeu à la dernière mise à jour, lue aussi par le thread du rendu
 std::mutex g_gameMutex;
 float g_gameOrient[9]{};
@@ -216,6 +238,10 @@ struct Settings {
     bool swapEyes = false;
     bool interfaceScreen = true; // magasins et interfaces de planque sur l'écran virtuel
     bool cutsceneScreen = true;  // cinématiques sur l'écran virtuel
+    bool firstPerson = false;    // caméra aux yeux du personnage
+    float fpForward = 0.12f;     // décalage des yeux vers l'avant du regard, en mètres
+    float fpUp = 0.06f;          // décalage vers le haut
+    float fpSmooth = 0.12f;      // constante de temps du filtre sur la tête, en secondes (0 : aucun)
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -254,6 +280,16 @@ void ReadConfig()
     s.swapEyes = config::Int("Stereo", "swap_eyes", 0) != 0;
     s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
     s.cutsceneScreen = config::Int("Display", "cutscene_screen", 1) != 0;
+    s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
+    s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
+    s.fpUp = config::Float("FirstPerson", "up", 0.06f);
+    s.fpSmooth = config::Float("FirstPerson", "smooth", 0.12f);
+    if (!(s.fpForward > -2.0f && s.fpForward < 2.0f))
+        s.fpForward = 0.12f;
+    if (!(s.fpUp > -2.0f && s.fpUp < 2.0f))
+        s.fpUp = 0.06f;
+    if (!(s.fpSmooth >= 0.0f && s.fpSmooth < 5.0f))
+        s.fpSmooth = 0.12f;
     std::lock_guard lock(g_settingsMutex);
     g_settings = s;
 }
@@ -354,8 +390,59 @@ int GameState(const Settings& s)
     return s.cutsceneScreen && InCutscene() ? kCutscene : kPlaying;
 }
 
+// Modes de caméra où la vue reste celle du jeu : 2 caméra libre, 5 cinématique, 10 magasin,
+// 11 personnalisation de planque ou de gang
+bool FirstPersonAllowed()
+{
+    if (!g_playerReady || !g_pos)
+        return false;
+    const int mode = g_cameraMode ? *g_cameraMode : 0;
+    return mode != 2 && mode != 5 && mode != 10 && mode != 11;
+}
+
+// Position des yeux du personnage. game : orientation de la caméra du jeu (son cap donne
+// l'avant). false : pas de joueur ou pas de squelette, la caméra du jeu reste en place.
+bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
+{
+    float head[3], root[3];
+    if (!player::HeadPosition(head, root)) {
+        g_headOffsetValid = false;
+        return false;
+    }
+    LARGE_INTEGER now, frequency;
+    QueryPerformanceCounter(&now);
+    QueryPerformanceFrequency(&frequency);
+    const float dt = static_cast<float>(now.QuadPart - g_headTime.QuadPart) / static_cast<float>(frequency.QuadPart);
+    g_headTime = now;
+
+    const float offset[3] = {head[0] - root[0], head[1] - root[1], head[2] - root[2]};
+    float jump = 0.0f;
+    for (int k = 0; k < 3; ++k)
+        jump += (offset[k] - g_headOffset[k]) * (offset[k] - g_headOffset[k]);
+    // Filtre passe-bas sur l'écart racine -> tête : la racine avance sans à-coups, c'est
+    // l'animation qui secoue la tête. Recalé d'un coup au départ, après une interruption ou
+    // un saut de plus de 1 m (entrée en véhicule, chute).
+    if (!g_headOffsetValid || !(dt > 0.0f && dt < 0.25f) || jump > 1.0f || s.fpSmooth <= 0.0f) {
+        memcpy(g_headOffset, offset, sizeof(offset));
+        g_headOffsetValid = true;
+    } else {
+        const float alpha = 1.0f - std::exp(-dt / s.fpSmooth);
+        for (int k = 0; k < 3; ++k)
+            g_headOffset[k] += (offset[k] - g_headOffset[k]) * alpha;
+    }
+    g_headHeight = g_headOffset[1];
+
+    float level[9];
+    LevelOrientation(game, level);
+    for (int k = 0; k < 3; ++k)
+        eye[k] = root[k] + g_headOffset[k] + s.fpForward * level[6 + k] + s.fpUp * level[3 + k];
+    return true;
+}
+
 ULONGLONG g_lastStats = 0;
 int g_lastState = -1;
+int g_lastCameraMode = -1;
+int g_lastFirstPerson = -1;
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -368,6 +455,9 @@ void __cdecl HkUpdateCamera()
         memcpy(g_orient, g_gameOrient, sizeof(g_gameOrient));
     }
     g_applied = false;
+    if (g_posApplied && memcmp(g_pos, g_writtenPos, sizeof(g_writtenPos)) == 0)
+        memcpy(g_pos, g_gamePos, sizeof(g_gamePos));
+    g_posApplied = false;
 
     g_updateCamera();
 
@@ -402,6 +492,30 @@ void __cdecl HkUpdateCamera()
         g_applied = true;
     }
 
+    // Première personne : la caméra finale passe aux yeux du personnage
+    if (g_cameraMode && *g_cameraMode != g_lastCameraMode) {
+        LOG_ENGINE("mode de camera du jeu : %d", *g_cameraMode);
+        g_lastCameraMode = *g_cameraMode;
+    }
+    bool firstPerson = false;
+    if (s.firstPerson && state == kPlaying && FirstPersonAllowed()) {
+        float eye[3];
+        if (FirstPersonEye(game, s, eye)) {
+            memcpy(g_gamePos, g_pos, sizeof(g_gamePos));
+            memcpy(g_writtenPos, eye, sizeof(eye));
+            memcpy(g_pos, eye, sizeof(eye));
+            g_posApplied = true;
+            firstPerson = true;
+        }
+    } else {
+        g_headOffsetValid = false;
+    }
+    if (static_cast<int>(firstPerson) != g_lastFirstPerson) {
+        LOG_ENGINE("vue : %s", firstPerson ? "premiere personne (camera aux yeux du personnage)"
+                                           : "camera du jeu (3e personne)");
+        g_lastFirstPerson = firstPerson;
+    }
+
     // Relevé : première image, puis toutes les 10 s
     if (++g_calls == 1 || now - g_lastStats >= 10000) {
         const unsigned copies = g_renderCopies;
@@ -431,6 +545,12 @@ void __cdecl HkUpdateCamera()
         LOG_ENGINE("  position (%.1f, %.1f, %.1f), avant du jeu (%.2f, %.2f, %.2f), haut (%.2f, %.2f, %.2f)",
                    g_pos ? g_pos[0] : 0.0f, g_pos ? g_pos[1] : 0.0f, g_pos ? g_pos[2] : 0.0f, game[6], game[7], game[8],
                    game[3], game[4], game[5]);
+        if (firstPerson)
+            LOG_ENGINE("  premiere personne : tete a %.2f m au-dessus de la racine, camera du jeu a %.2f m des yeux",
+                       g_headHeight,
+                       std::sqrt((g_gamePos[0] - g_pos[0]) * (g_gamePos[0] - g_pos[0]) +
+                                 (g_gamePos[1] - g_pos[1]) * (g_gamePos[1] - g_pos[1]) +
+                                 (g_gamePos[2] - g_pos[2]) * (g_gamePos[2] - g_pos[2])));
         if (tracked) {
             // Lacet et tangage du casque, en degrés (0 = face à l'écran virtuel)
             float head[9];
@@ -580,6 +700,8 @@ bool InstallCameraHook()
     if (update) {
         uint8_t* copy = pattern::FindIn(update, kFunctionSpan, kOrientCopySig);
         uint8_t* read = pattern::FindIn(update, kFunctionSpan, kPosReadSig);
+        if (uint8_t* mode = pattern::FindIn(update, kFunctionSpan, kCameraModeSig))
+            g_cameraMode = reinterpret_cast<const int*>(absolute(mode + 1));
         if (copy) {
             g_orient = absolute(copy + 6);
             g_pos = read ? absolute(read + 7) : nullptr; // l'opérande du « mov eax,[x] »
@@ -684,6 +806,12 @@ bool InstallCameraHook()
         LOG_ENGINE("octet des cinematiques introuvable : elles resteront en affichage immersif");
     }
 
+    // Première personne : le joueur et son squelette
+    if (g_updateCameraTarget && g_pos) {
+        g_playerReady = player::Install();
+        LOG_ENGINE("mode de camera du jeu : %s", g_cameraMode ? "trouve" : "introuvable (premiere personne dans tous les modes)");
+    }
+
     if (!g_updateCameraTarget && !g_getFovTarget) {
         LOG_ENGINE("camera : rien n'a pu etre detourne, suivi de tete desactive");
         return false;
@@ -708,6 +836,9 @@ void RemoveCameraHook()
     if (g_applied && g_orient)
         memcpy(g_orient, g_gameOrient, sizeof(g_gameOrient));
     g_applied = false;
+    if (g_posApplied && g_pos)
+        memcpy(g_pos, g_gamePos, sizeof(g_gamePos));
+    g_posApplied = false;
 }
 
 bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair)

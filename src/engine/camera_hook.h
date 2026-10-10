@@ -13,7 +13,8 @@ void RemoveCameraHook();
 // horizontal du rendu (degrés). false si cette image n'a pas de vue : pas de caméra de rendu
 // (menu principal, chargement), jeu en pause (menu de pause : il s'affiche sur l'écran
 // virtuel) ou tête non suivie. À appeler une fois par Present, sur le thread du rendu : les
-// vues sont rendues dans l'ordre où les images ont été préparées.
-bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg);
+// vues sont rendues dans l'ordre où les images ont été préparées. pair : numéro de la paire
+// en vrai relief (deux images du même instant du jeu, œil gauche puis œil droit), 0 sinon.
+bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair);
 
 } // namespace engine

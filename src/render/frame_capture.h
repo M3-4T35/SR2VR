@@ -21,6 +21,9 @@ namespace render {
 struct FrameView {
     bool valid = false;
     int eye = 0; // 0 gauche (ou image commune aux deux yeux), 1 droit
+    // Vrai relief : numéro de la paire (les deux yeux du même instant du jeu, rendus l'un
+    // après l'autre, œil gauche d'abord). 0 : image seule.
+    unsigned pair = 0;
     float headQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float hfovDeg = 0.0f;
 };
@@ -37,15 +40,29 @@ struct CpuFrame {
 // Thread XR : demande une image au prochain Present (au plus une par image du casque)
 void RequestFrame();
 
-// Thread du jeu : copie le back buffer si une image est demandée (avant le Present d'origine)
+// Thread du jeu : copie le back buffer si une image est demandée (avant le Present d'origine).
+// Les deux images d'une paire vont ensemble : l'œil gauche attend son œil droit, qui est
+// capturé d'office, et les deux sont publiés en même temps.
 void CaptureFrame(IDirect3DDevice9* device, const FrameView& view);
 
-// Thread XR : échange `frame` avec la dernière capture de cet œil si elle est plus récente
-// que la sienne. true si `frame` contient une nouvelle image. Les images sans vue (menus)
-// sont rangées avec l'œil 0.
-bool TakeLatestFrame(int eye, CpuFrame& frame);
+// Thread XR : échange `left` et `right` avec la dernière capture de chaque œil quand elle est
+// plus récente que la leur, les deux d'un seul geste (jamais une demi-paire). fresh[i] : l'œil
+// i a reçu une nouvelle image. Les images sans vue (menus) sont rangées avec l'œil gauche.
+void TakeLatestFrames(CpuFrame& left, CpuFrame& right, bool fresh[2]);
 
-// Thread XR : nombre de captures et durée moyenne (ms) depuis le dernier appel
-void TakeCaptureStats(unsigned* count, double* averageMs);
+// Relevé des captures depuis le dernier appel
+struct CaptureStats {
+    unsigned count = 0;        // captures
+    double averageMs = 0.0;    // durée moyenne d'une capture
+    unsigned pairs = 0;        // paires publiées
+    unsigned brokenPairs = 0;  // paires restées incomplètes (œil droit jamais présenté)
+    // Par œil, pour les images qui ont une vue : nombre d'images et luminosité moyenne
+    // (0 à 255, sur un échantillon de pixels). Une image vide se voit à sa luminosité nulle.
+    unsigned eyeCount[2]{};
+    double eyeLuma[2]{};
+};
+
+// Thread XR
+void TakeCaptureStats(CaptureStats* stats);
 
 } // namespace render

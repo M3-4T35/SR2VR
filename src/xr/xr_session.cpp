@@ -235,7 +235,9 @@ private:
 
     // Réglages [Display] de sr2_vr.ini, relus chaque seconde
     void ReadConfig();
-    int displayMode_ = 0;     // 0 écran virtuel, 1 immersif (même image aux deux yeux), 2 relief
+    // 0 écran virtuel, 1 immersif (même image aux deux yeux), 2 relief un œil par image,
+    // 3 vrai relief (deux images par image de simulation)
+    int displayMode_ = 0;
     float fovScale_ = 1.0f;   // correction du champ de vue annoncé au casque
     ULONGLONG lastConfig_ = 0;
     int shownMode_ = -1;      // dernier affichage réellement utilisé (pour le log)
@@ -543,12 +545,12 @@ void XrApp::PollEvents()
     }
 }
 
-// Envoie la dernière image du jeu rendue pour cet œil dans sa swapchain. true si une
-// nouvelle image a été copiée.
+// Envoie l'image du jeu que cet œil vient de recevoir dans sa swapchain. true si elle a été
+// copiée.
 bool XrApp::CopyGameFrame(int eyeIndex)
 {
     EyeTarget& eye = eyes_[eyeIndex];
-    if (!render::TakeLatestFrame(eyeIndex, eye.frame) || !EnsureSwapchains(eye.frame.width, eye.frame.height))
+    if (!EnsureSwapchains(eye.frame.width, eye.frame.height))
         return false;
 
     bool copied = false;
@@ -649,8 +651,11 @@ void XrApp::RenderFrame()
                 g_ipd = ipd;
         }
 
+        // Les deux yeux d'un seul geste : jamais la moitié d'une paire
+        bool fresh[2]{};
+        render::TakeLatestFrames(eyes_[0].frame, eyes_[1].frame, fresh);
         for (int eye = 0; eye < 2; ++eye)
-            if (CopyGameFrame(eye))
+            if (fresh[eye] && CopyGameFrame(eye))
                 ++framesCopied_;
         // Image suivante : capturée par le jeu à son prochain Present
         render::RequestFrame();
@@ -674,7 +679,7 @@ void XrApp::RenderFrame()
                eye.frame.view.hfovDeg > 1.0f && nowTick - eye.copiedTick < 500;
     };
     int shown = 0;
-    if (fs.shouldRender && viewsLocated && displayMode_ == 2 && usable(eyes_[0], 0) && usable(eyes_[1], 1))
+    if (fs.shouldRender && viewsLocated && displayMode_ >= 2 && usable(eyes_[0], 0) && usable(eyes_[1], 1))
         shown = 2;
     else if (fs.shouldRender && viewsLocated && displayMode_ >= 1 && usable(eyes_[0], 0))
         shown = 1;
@@ -751,19 +756,24 @@ void XrApp::RenderFrame()
         lastStats_ = now;
     } else if (now - lastStats_ >= kStatsIntervalMs) {
         const double seconds = static_cast<double>(now - lastStats_) / 1000.0;
-        unsigned captures = 0;
-        double captureMs = 0.0;
-        render::TakeCaptureStats(&captures, &captureMs);
+        render::CaptureStats capture;
+        render::TakeCaptureStats(&capture);
         // Relevé toutes les 10 s pendant 5 min, puis toutes les minutes
         if (statsLogged_ < 30 || statsLogged_ % 6 == 0)
             LOG_XR("casque : %.1f images par seconde soumises, %.1f images du jeu par seconde (capture %.2f ms en "
                    "moyenne), etat %s, %u touche(s) envoyee(s)",
                    static_cast<double>(framesSubmitted_ - submittedAtStats_) / seconds,
-                   static_cast<double>(framesCopied_ - copiedAtStats_) / seconds, captureMs, StateName(state_),
+                   static_cast<double>(framesCopied_ - copiedAtStats_) / seconds, capture.averageMs, StateName(state_),
                    input::TakeSentCount());
         if (statsLogged_ < 30 || statsLogged_ % 6 == 0)
-            LOG_XR("  affichage sur ces images : %u ecran virtuel, %u immersif, %u relief", shownCount_[0],
-                   shownCount_[1], shownCount_[2]);
+            LOG_XR("  affichage sur ces images : %u ecran virtuel, %u immersif, %u relief ; paires du jeu : %.1f par "
+                   "seconde, %u incomplete(s)",
+                   shownCount_[0], shownCount_[1], shownCount_[2], static_cast<double>(capture.pairs) / seconds,
+                   capture.brokenPairs);
+        if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.eyeCount[0] + capture.eyeCount[1])
+            LOG_XR("  images avec vue : oeil gauche %u (luminosite moyenne %.0f sur 255), oeil droit %u (luminosite "
+                   "moyenne %.0f)",
+                   capture.eyeCount[0], capture.eyeLuma[0], capture.eyeCount[1], capture.eyeLuma[1]);
         shownCount_[0] = shownCount_[1] = shownCount_[2] = 0;
         ++statsLogged_;
         submittedAtStats_ = framesSubmitted_;

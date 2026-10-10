@@ -22,6 +22,19 @@
 // en file et ressort au Present de la même image : au Present de l'image N, la caméra de
 // l'image N+1 peut déjà avoir été préparée.
 //
+// Vrai relief ([Display] mode=3). La fonction qui prépare une image (elle attend le thread du
+// rendu, recopie la caméra, parcourt la scène puis lui confie l'image) est détournée et
+// appelée deux fois par image de simulation : œil gauche puis œil droit, avec la même pose de
+// tête. Les deux yeux montrent donc le même instant du jeu. Chaque appel donne un Present ;
+// les deux images portent le même numéro de paire et sont livrées ensemble au casque.
+// Entre les deux appels, deux choses sont remises comme au début de l'image :
+// - la « caméra en attente » : pendant l'image de simulation, le jeu y note ce que le rendu
+//   devra faire (dont un octet « dessiner la scène ») ; la préparation la recopie dans la
+//   caméra de rendu puis la remet à zéro. Sans la restaurer, la deuxième image sort noire
+//   (constaté le 2026-10-10 : œil droit de luminosité nulle).
+// - le compteur d'images du jeu, qui avance d'un cran comme entre deux images de simulation :
+//   la préparation ne libère le thread du rendu que si ce compteur a changé.
+//
 // Menus et cinématiques : on ne touche à rien, et l'image n'a pas de vue, donc elle s'affiche
 // sur l'écran virtuel. Trois cas : le jeu en pause (menu de pause et autres menus qui arrêtent
 // le jeu) ; les interfaces qui laissent le jeu tourner (garde-robe, garage, boutiques,
@@ -77,16 +90,32 @@ constexpr int kFreePlayOffset = 10;     // opérande du « mov byte »
 constexpr char kCutsceneStartSig[] =
     "C6 05 ?? ?? ?? ?? 00 D9 15 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 01 D9 15 ?? ?? ?? ?? C6 05 ?? ?? ?? ?? 00 D9 1D";
 constexpr int kCutsceneOffset = 15;     // opérande du deuxième « mov byte »
+// Préparation d'une image par la simulation (un seul appelant, la boucle du jeu), sans
+// argument : movzx eax,byte [...] ; sub esp,14h ; push ebx/ebp/esi/edi ; xor ebx,ebx ;
+// push eax ; mov [...],bl ; call ...
+constexpr char kRenderFrameSig[] = "0F B6 05 ?? ?? ?? ?? 83 EC 14 53 55 56 57 33 DB 50 88 1D ?? ?? ?? ?? E8";
+// Dans l'horloge du jeu, appelée une fois par image de simulation : mov ebx,1 ;
+// add [compteur d'images],ebx ; cmp byte [...],0 ; push esi ; push edi ; mov esi,eax
+constexpr char kFrameCounterSig[] = "BB 01 00 00 00 01 1D ?? ?? ?? ?? 80 3D ?? ?? ?? ?? 00 56 57 8B F0";
+constexpr int kFrameCounterOffset = 7;  // opérande du « add »
+// Dans la préparation d'une image : mov eax,<caméra de rendu> ; call <recopie de la caméra en
+// attente> ; mov eax,<caméra en attente> ; call <remise à zéro> ; cmp [...],bl
+constexpr char kPendingCameraSig[] = "B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? B8 ?? ?? ?? ?? E8 ?? ?? ?? ?? 38 1D";
+constexpr int kPendingCameraOffset = 11; // opérande du deuxième « mov eax »
+constexpr size_t kPendingCameraSize = 0xAC; // dernier champ recopié : +0xA8
 constexpr int kRenderOrientOffset = 11; // opérande du « mov edi »
 constexpr int kGetFovCallOffset = 17;   // l'instruction call GetFOV
 constexpr int kRenderFovOffset = 29;    // opérande du « fstp »
 
 using UpdateCameraFn = void(__cdecl*)();
 using GetFovFn = double(__cdecl*)(); // résultat dans st(0), comme l'original (float) et celui de Juiced
+using RenderFrameFn = int(__cdecl*)();
 UpdateCameraFn g_updateCamera = nullptr;
 GetFovFn g_getFov = nullptr;
+RenderFrameFn g_renderFrame = nullptr;
 void* g_updateCameraTarget = nullptr;
 void* g_getFovTarget = nullptr;
+void* g_renderFrameTarget = nullptr;
 void* g_renderReturn = nullptr; // adresse de retour de l'appel à GetFOV dans la copie de caméra
 
 float* g_orient = nullptr;       // simulation : rvec, uvec, fvec (9 floats)
@@ -95,6 +124,8 @@ float* g_renderOrient = nullptr; // rendu : rvec, uvec, fvec
 float* g_renderPos = nullptr;    // rendu : x, y, z (juste avant l'orientation)
 const int* g_pauseCount = nullptr; // nombre de pauses en cours (0 : le jeu tourne)
 const uint8_t* g_freePlay = nullptr; // 1 en jeu, 0 dans un magasin ou une interface de planque
+int* g_frameCounter = nullptr;       // compteur d'images du jeu (un cran par image de simulation)
+uint8_t* g_pendingCamera = nullptr;  // caméra en attente : demandes de la simulation au rendu
 
 bool Paused()
 {
@@ -127,9 +158,24 @@ struct PendingView {
     bool valid = false;
     float quat[4]{0.0f, 0.0f, 0.0f, 1.0f};
     int eye = 0;
+    unsigned pair = 0; // vrai relief : numéro de la paire, 0 sinon
     float fov = 0.0f;
     ULONGLONG tick = 0;
 };
+
+// Vrai relief : paire en cours de préparation (thread de simulation uniquement). Les deux
+// yeux d'une paire partagent la pose de tête et l'écart des yeux relevés à son début.
+struct Pair {
+    bool active = false;
+    bool viewed = false; // la préparation en cours a bien recopié une caméra de jeu
+    unsigned id = 0;
+    int eye = 0;
+    float quat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+    float ipd = 0.063f;
+};
+Pair g_pair;
+unsigned g_pairCounter = 0;
+std::atomic<unsigned> g_pairsRendered{0};
 constexpr ULONGLONG kViewMaxAgeMs = 250;
 // La simulation n'a jamais plus d'une image d'avance sur le rendu : au-delà de deux vues en
 // attente, la plus ancienne appartient à une image qui n'a pas été présentée
@@ -163,6 +209,8 @@ struct Settings {
     float hfov = 0.0f;         // champ de vue horizontal imposé au rendu (0 = celui du jeu)
     bool levelHorizon = false; // caméra du jeu remise à plat
     bool stereo = false;       // relief : un œil par image
+    bool pairs = false;        // vrai relief : deux images (gauche, droite) par image de simulation
+    bool pairCounter = true;   // vrai relief : le compteur d'images avance entre les deux yeux
     float worldScale = 1.0f;   // unités du jeu par mètre
     float ipdScale = 1.0f;     // correction de l'écart entre les yeux
     bool swapEyes = false;
@@ -194,7 +242,9 @@ void ReadConfig()
     // baisse le regard ; la caméra 3e personne du jeu, elle, plonge de 10° environ), caméra du
     // jeu intacte sur l'écran virtuel
     s.levelHorizon = config::Int("Camera", "level_horizon", mode >= 1 ? 1 : 0) != 0;
-    s.stereo = mode == 2;
+    s.stereo = mode >= 2;
+    s.pairs = mode == 3;
+    s.pairCounter = config::Int("Stereo", "pair_counter", 1) != 0;
     s.worldScale = config::Float("Stereo", "world_scale", 1.0f);
     s.ipdScale = config::Float("Stereo", "ipd_scale", 1.0f);
     if (!(s.worldScale > 0.01f && s.worldScale < 100.0f))
@@ -358,10 +408,14 @@ void __cdecl HkUpdateCamera()
         if (g_calls > 1) {
             const double seconds = static_cast<double>(now - g_lastStats) / 1000.0;
             LOG_ENGINE("camera : %.1f mises a jour par seconde (thread %lu), %.1f cameras de rendu par seconde, "
-                       "horizon %s, %s%s",
+                       "%.1f paires par seconde, horizon %s, %s%s",
                        static_cast<double>(g_calls - g_callsAtLastStats) / seconds, GetCurrentThreadId(),
-                       static_cast<double>(copies - g_copiesAtLastStats) / seconds, s.levelHorizon ? "a plat" : "du jeu",
-                       s.stereo ? "relief (un oeil par image)" : "sans relief",
+                       static_cast<double>(copies - g_copiesAtLastStats) / seconds,
+                       static_cast<double>(g_pairsRendered.exchange(0)) / seconds, s.levelHorizon ? "a plat" : "du jeu",
+                       !s.stereo  ? "sans relief"
+                       : !s.pairs ? "relief (un oeil par image)"
+                       : g_pendingCamera ? "vrai relief (deux images par image de simulation)"
+                                         : "relief (un oeil par image : vrai relief indisponible)",
                        state == kPaused      ? ", JEU EN PAUSE"
                        : state == kInterface ? ", INTERFACE DU JEU OUVERTE"
                        : state == kCutscene  ? ", CINEMATIQUE"
@@ -400,6 +454,7 @@ void OnRenderCamera(double* fov)
     const Settings s = CurrentSettings();
     if (++g_renderCopies == 1)
         LOG_ENGINE("camera de rendu : premiere image preparee sur le thread %lu", GetCurrentThreadId());
+    g_pair.viewed = true;
     PendingView view;
     view.tick = GetTickCount64();
     if (GameState(s) != kPlaying) {
@@ -415,7 +470,15 @@ void OnRenderCamera(double* fov)
 
     float quat[4];
     float ipd = 0.063f;
-    const bool posed = xr::GetHeadPose(quat, &ipd);
+    bool posed = false;
+    if (g_pair.active) {
+        // Les deux yeux d'une paire : même pose de tête, relevée au début de la paire
+        memcpy(quat, g_pair.quat, sizeof(quat));
+        ipd = g_pair.ipd;
+        posed = true;
+    } else {
+        posed = xr::GetHeadPose(quat, &ipd);
+    }
     if (!posed)
         ++g_copiesWithoutPose;
     const bool tracked = posed && s.headTracking;
@@ -436,7 +499,7 @@ void OnRenderCamera(double* fov)
 
         if (s.stereo) {
             // Un œil par image : la caméra se décale d'un demi-écart le long de sa droite
-            eye = static_cast<int>(g_eyeCounter++ & 1);
+            eye = g_pair.active ? g_pair.eye : static_cast<int>(g_eyeCounter++ & 1);
             const float side = (eye == 0) == !s.swapEyes ? -1.0f : 1.0f;
             const float offset = side * 0.5f * ipd * s.ipdScale * s.worldScale;
             for (int k = 0; k < 3; ++k)
@@ -448,9 +511,45 @@ void OnRenderCamera(double* fov)
         view.valid = true;
         memcpy(view.quat, quat, sizeof(view.quat));
         view.eye = eye;
+        view.pair = g_pair.active && s.stereo ? g_pair.id : 0;
         view.fov = static_cast<float>(*fov);
     }
     PushView(view);
+}
+
+// Préparation d'une image. En vrai relief et en partie : deux fois de suite, œil gauche puis
+// œil droit, sans que la simulation avance entre les deux.
+int __cdecl HkRenderFrame()
+{
+    const Settings s = CurrentSettings();
+    Pair pair;
+    if (!s.pairs || !g_pendingCamera || !s.headTracking || GameState(s) != kPlaying ||
+        !xr::GetHeadPose(pair.quat, &pair.ipd))
+        return g_renderFrame();
+
+    // Ce que la simulation a demandé au rendu pour cette image, à redonner à l'œil droit
+    uint8_t pending[kPendingCameraSize];
+    memcpy(pending, g_pendingCamera, sizeof(pending));
+
+    pair.active = true;
+    if (++g_pairCounter == 0)
+        ++g_pairCounter; // 0 veut dire « image seule »
+    pair.id = g_pairCounter;
+    pair.eye = 0;
+    g_pair = pair;
+    const int result = g_renderFrame();
+    // Image sans caméra de jeu (chargement, menu principal) : rien à rendre pour l'autre œil
+    if (g_pair.viewed) {
+        memcpy(g_pendingCamera, pending, sizeof(pending));
+        // Pour le thread du rendu, l'œil droit est l'image suivante
+        if (s.pairCounter && g_frameCounter)
+            ++*g_frameCounter;
+        g_pair.eye = 1;
+        g_renderFrame();
+        ++g_pairsRendered;
+    }
+    g_pair.active = false;
+    return result;
 }
 
 double __cdecl HkGetFov()
@@ -526,6 +625,39 @@ bool InstallCameraHook()
         }
     }
 
+    // Vrai relief : la préparation d'une image, à appeler deux fois par image de simulation
+    if (g_getFovTarget) {
+        if (auto* frame = static_cast<uint8_t*>(pattern::Find("preparation d'une image", kRenderFrameSig))) {
+            MH_STATUS st = MH_CreateHook(frame, reinterpret_cast<void*>(&HkRenderFrame),
+                                         reinterpret_cast<void**>(&g_renderFrame));
+            if (st == MH_OK)
+                st = MH_EnableHook(frame);
+            if (st == MH_OK) {
+                g_renderFrameTarget = frame;
+            } else {
+                LOG_ENGINE("camera : ECHEC MinHook sur la preparation d'une image : %s", MH_StatusToString(st));
+                MH_RemoveHook(frame);
+            }
+        }
+        if (g_renderFrameTarget) {
+            if (uint8_t* site = pattern::FindIn(static_cast<uint8_t*>(g_renderFrameTarget), 0x200, kPendingCameraSig)) {
+                g_pendingCamera = reinterpret_cast<uint8_t*>(absolute(site + kPendingCameraOffset));
+                LOG_ENGINE("camera en attente : exe+0x%lX (octet de dessin de la scene : %d)", rel(g_pendingCamera),
+                           static_cast<int>(g_pendingCamera[0x6D]));
+            } else {
+                LOG_ENGINE("camera en attente introuvable dans la preparation d'une image");
+            }
+        }
+        if (!g_renderFrameTarget || !g_pendingCamera)
+            LOG_ENGINE("vrai relief indisponible : [Display] mode=3 donnera un oeil par image, comme mode=2");
+        if (auto* clock = static_cast<uint8_t*>(pattern::Find("compteur d'images", kFrameCounterSig))) {
+            g_frameCounter = reinterpret_cast<int*>(absolute(clock + kFrameCounterOffset));
+            LOG_ENGINE("compteur d'images du jeu : exe+0x%lX (vaut %d)", rel(g_frameCounter), *g_frameCounter);
+        } else {
+            LOG_ENGINE("compteur d'images introuvable : en vrai relief, l'oeil droit risque de rester vide");
+        }
+    }
+
     // Pause
     if (auto* unpause = static_cast<uint8_t*>(pattern::Find("fin de pause", kUnpauseSig))) {
         g_pauseCount = reinterpret_cast<const int*>(absolute(unpause + 2));
@@ -556,27 +688,29 @@ bool InstallCameraHook()
         LOG_ENGINE("camera : rien n'a pu etre detourne, suivi de tete desactive");
         return false;
     }
-    LOG_ENGINE("camera : simulation %s, rendu %s, suivi de tete %s", g_updateCameraTarget ? "detournee" : "INDISPONIBLE",
+    LOG_ENGINE("camera : simulation %s, rendu %s, preparation d'image %s, suivi de tete %s",
+               g_updateCameraTarget ? "detournee" : "INDISPONIBLE",
                g_getFovTarget ? "detourne" : "INDISPONIBLE (pas d'affichage immersif ni de relief)",
+               g_renderFrameTarget ? "detournee" : "INDISPONIBLE (pas de vrai relief)",
                CurrentSettings().headTracking ? "actif" : "coupe");
     return true;
 }
 
 void RemoveCameraHook()
 {
-    for (void* target : {g_updateCameraTarget, g_getFovTarget}) {
+    for (void* target : {g_updateCameraTarget, g_getFovTarget, g_renderFrameTarget}) {
         if (target) {
             MH_DisableHook(target);
             MH_RemoveHook(target);
         }
     }
-    g_updateCameraTarget = g_getFovTarget = nullptr;
+    g_updateCameraTarget = g_getFovTarget = g_renderFrameTarget = nullptr;
     if (g_applied && g_orient)
         memcpy(g_orient, g_gameOrient, sizeof(g_gameOrient));
     g_applied = false;
 }
 
-bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg)
+bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair)
 {
     PendingView view;
     {
@@ -599,6 +733,7 @@ bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg)
     memcpy(headQuat, view.quat, sizeof(view.quat));
     *eye = view.eye;
     *hfovDeg = view.fov;
+    *pair = view.pair;
     return true;
 }
 

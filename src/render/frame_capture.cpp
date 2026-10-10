@@ -21,6 +21,8 @@ D3DFORMAT g_format = D3DFMT_UNKNOWN;
 bool g_unsupported = false; // format ou multisampling non géré : capture coupée pour ce device
 int g_failures = 0;
 CpuFrame g_work;
+CpuFrame g_staged;        // œil gauche d'une paire, en attente de son œil droit
+unsigned g_stagedPair = 0; // numéro de cette paire, 0 si rien n'attend
 
 // Partagé avec le thread XR
 std::mutex g_mutex;
@@ -28,6 +30,26 @@ CpuFrame g_ready[2]; // dernière capture de chaque œil
 uint64_t g_seq = 0;
 unsigned g_statCount = 0;
 double g_statMs = 0.0;
+unsigned g_statPairs = 0;
+std::atomic<unsigned> g_statBrokenPairs{0};
+unsigned g_statEyeCount[2]{};
+double g_statEyeLuma[2]{};
+
+// Luminosité moyenne (0 à 255) d'un échantillon de pixels BGRA : une ligne sur 16, un pixel sur 16
+double SampleLuma(const CpuFrame& frame)
+{
+    unsigned long long sum = 0;
+    unsigned samples = 0;
+    for (UINT y = 8; y < frame.height; y += 16) {
+        const uint8_t* row = frame.pixels.data() + static_cast<size_t>(y) * frame.width * 4;
+        for (UINT x = 8; x < frame.width; x += 16) {
+            const uint8_t* p = row + static_cast<size_t>(x) * 4;
+            sum += (p[0] + 2u * p[1] + p[2]) / 4u;
+            ++samples;
+        }
+    }
+    return samples ? static_cast<double>(sum) / samples : 0.0;
+}
 
 double NowMs()
 {
@@ -107,8 +129,24 @@ void RequestFrame()
 
 void CaptureFrame(IDirect3DDevice9* device, const FrameView& view)
 {
-    if (!device || !g_requested.exchange(false))
+    if (!device)
         return;
+    const bool paired = view.valid && view.pair != 0;
+    const bool second = paired && view.eye == 1;
+    if (second) {
+        // Œil droit : capturé si et seulement si son œil gauche l'a été. Les deux images d'une
+        // paire se suivent de plus près que deux demandes du thread XR.
+        if (g_stagedPair != view.pair)
+            return;
+    } else {
+        if (g_stagedPair) {
+            // L'œil gauche précédent n'a jamais eu son œil droit
+            g_stagedPair = 0;
+            ++g_statBrokenPairs;
+        }
+        if (!g_requested.exchange(false))
+            return;
+    }
     const double start = NowMs();
 
     IDirect3DSurface9* backBuffer = nullptr;
@@ -148,33 +186,62 @@ void CaptureFrame(IDirect3DDevice9* device, const FrameView& view)
     }
     g_readback->UnlockRect();
 
+    const double luma = view.valid ? SampleLuma(g_work) : 0.0;
     const double elapsed = NowMs() - start;
     std::lock_guard lock(g_mutex);
+    if (view.valid) {
+        const int eye = view.eye == 1 ? 1 : 0;
+        ++g_statEyeCount[eye];
+        g_statEyeLuma[eye] += luma;
+    }
     g_work.seq = ++g_seq;
-    std::swap(g_work, g_ready[view.valid && view.eye == 1 ? 1 : 0]);
     ++g_statCount;
     g_statMs += elapsed;
+    if (paired && !second) {
+        // Œil gauche d'une paire : gardé de côté jusqu'à son œil droit
+        std::swap(g_work, g_staged);
+        g_stagedPair = view.pair;
+    } else if (second) {
+        // La paire est complète : les deux yeux sont publiés ensemble
+        std::swap(g_staged, g_ready[0]);
+        std::swap(g_work, g_ready[1]);
+        g_stagedPair = 0;
+        ++g_statPairs;
+    } else {
+        std::swap(g_work, g_ready[view.valid && view.eye == 1 ? 1 : 0]);
+    }
 }
 
-bool TakeLatestFrame(int eye, CpuFrame& frame)
+void TakeLatestFrames(CpuFrame& left, CpuFrame& right, bool fresh[2])
 {
     std::lock_guard lock(g_mutex);
-    CpuFrame& ready = g_ready[eye == 1 ? 1 : 0];
-    if (ready.seq == 0 || ready.seq <= frame.seq)
-        return false;
-    // L'ancienne image du thread XR revient au jeu : son numéro, plus petit, la désigne
-    // comme périmée et son tampon sera réutilisé
-    std::swap(frame, ready);
-    return true;
+    CpuFrame* const frames[2] = {&left, &right};
+    for (int eye = 0; eye < 2; ++eye) {
+        CpuFrame& ready = g_ready[eye];
+        fresh[eye] = ready.seq != 0 && ready.seq > frames[eye]->seq;
+        // L'ancienne image du thread XR revient au jeu : son numéro, plus petit, la désigne
+        // comme périmée et son tampon sera réutilisé
+        if (fresh[eye])
+            std::swap(*frames[eye], ready);
+    }
 }
 
-void TakeCaptureStats(unsigned* count, double* averageMs)
+void TakeCaptureStats(CaptureStats* stats)
 {
     std::lock_guard lock(g_mutex);
-    *count = g_statCount;
-    *averageMs = g_statCount ? g_statMs / g_statCount : 0.0;
+    stats->count = g_statCount;
+    stats->averageMs = g_statCount ? g_statMs / g_statCount : 0.0;
+    stats->pairs = g_statPairs;
+    stats->brokenPairs = g_statBrokenPairs.exchange(0);
+    for (int eye = 0; eye < 2; ++eye) {
+        stats->eyeCount[eye] = g_statEyeCount[eye];
+        stats->eyeLuma[eye] = g_statEyeCount[eye] ? g_statEyeLuma[eye] / g_statEyeCount[eye] : 0.0;
+        g_statEyeCount[eye] = 0;
+        g_statEyeLuma[eye] = 0.0;
+    }
     g_statCount = 0;
     g_statMs = 0.0;
+    g_statPairs = 0;
 }
 
 } // namespace render

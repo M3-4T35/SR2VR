@@ -1,0 +1,8 @@
+{
+  "name": "sr2-vr",
+  "version-string": "0.1.0",
+  "builtin-baseline": "11ace808cc8a3a941f386e33726b992b22ba9e5a",
+  "dependencies": [
+    "minhook"
+  ]
+}

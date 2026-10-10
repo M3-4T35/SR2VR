@@ -1,11 +1,13 @@
 #include "xr/xr_input.h"
 #include "input/keys.h"
+#include "input/vpad.h"
 #include "util/config.h"
 #include "util/log.h"
 
 #include <atomic>
 #include <cmath>
 #include <cstring>
+#include <mutex>
 #include <vector>
 
 namespace xr {
@@ -31,6 +33,34 @@ constexpr int kScanJump = 0x39, kScanCrouch = 0x2E;
 
 std::atomic<ULONGLONG> g_gameplayTick{0};
 
+// Pose de visée de la manette droite, publiée par le thread XR
+std::mutex g_aimMutex;
+float g_aimQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
+ULONGLONG g_aimTick = 0;
+constexpr ULONGLONG kAimMaxAgeMs = 300;
+
+std::atomic<unsigned> g_viewCycleRequests{0};
+
+// Roue des armes : une arme est désignée au-delà de 0,6 ; stick revenu sous 0,25, elle est prise
+constexpr float kWheelPoint = 0.6f;
+constexpr float kWheelRelease = 0.25f;
+// Après le relâchement du bouton, le stick reste pointé le temps que le jeu prenne l'arme
+constexpr ULONGLONG kWheelSettleMs = 200;
+
+void PublishAim(const XrQuaternionf* orientation)
+{
+    std::lock_guard lock(g_aimMutex);
+    if (orientation) {
+        g_aimQuat[0] = orientation->x;
+        g_aimQuat[1] = orientation->y;
+        g_aimQuat[2] = orientation->z;
+        g_aimQuat[3] = orientation->w;
+        g_aimTick = GetTickCount64();
+    } else {
+        g_aimTick = 0;
+    }
+}
+
 XrPath ToPath(XrInstance instance, const char* text)
 {
     XrPath path = XR_NULL_PATH;
@@ -39,7 +69,19 @@ XrPath ToPath(XrInstance instance, const char* text)
 }
 
 // Actions, dans l'ordre du tableau `actions` de Init
-enum { kLeftStick, kRightStick, kConfirm, kBack, kLeftTrigger, kRightTrigger, kRightGrip, kActionCount };
+enum {
+    kLeftStick,
+    kRightStick,
+    kConfirm,
+    kBack,
+    kLeftTrigger,
+    kRightTrigger,
+    kRightGrip,
+    kAimPose,
+    kLeftClick,
+    kRightClick,
+    kActionCount
+};
 
 struct Binding {
     int action;
@@ -62,7 +104,10 @@ const Profile kProfiles[] = {
       {kBack, "/user/hand/left/input/menu/click"},
       {kLeftTrigger, "/user/hand/left/input/trigger/value"},
       {kRightTrigger, "/user/hand/right/input/trigger/value"},
-      {kRightGrip, "/user/hand/right/input/squeeze/value"}}},
+      {kRightGrip, "/user/hand/right/input/squeeze/value"},
+      {kAimPose, "/user/hand/right/input/aim/pose"},
+      {kLeftClick, "/user/hand/left/input/thumbstick/click"},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
     {"/interaction_profiles/valve/index_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
       {kRightStick, "/user/hand/right/input/thumbstick"},
@@ -71,7 +116,10 @@ const Profile kProfiles[] = {
       {kBack, "/user/hand/left/input/b/click"},
       {kLeftTrigger, "/user/hand/left/input/trigger/value"},
       {kRightTrigger, "/user/hand/right/input/trigger/value"},
-      {kRightGrip, "/user/hand/right/input/squeeze/value"}}},
+      {kRightGrip, "/user/hand/right/input/squeeze/value"},
+      {kAimPose, "/user/hand/right/input/aim/pose"},
+      {kLeftClick, "/user/hand/left/input/thumbstick/click"},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
     {"/interaction_profiles/microsoft/motion_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
       {kRightStick, "/user/hand/right/input/thumbstick"},
@@ -80,7 +128,10 @@ const Profile kProfiles[] = {
       {kBack, "/user/hand/right/input/menu/click"},
       {kLeftTrigger, "/user/hand/left/input/trigger/value"},
       {kRightTrigger, "/user/hand/right/input/trigger/value"},
-      {kRightGrip, "/user/hand/right/input/squeeze/click"}}},
+      {kRightGrip, "/user/hand/right/input/squeeze/click"},
+      {kAimPose, "/user/hand/right/input/aim/pose"},
+      {kLeftClick, "/user/hand/left/input/thumbstick/click"},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
     {"/interaction_profiles/htc/vive_controller",
      {{kLeftStick, "/user/hand/left/input/trackpad"},
       {kRightStick, "/user/hand/right/input/trackpad"},
@@ -89,12 +140,14 @@ const Profile kProfiles[] = {
       {kBack, "/user/hand/right/input/menu/click"},
       {kLeftTrigger, "/user/hand/left/input/trigger/value"},
       {kRightTrigger, "/user/hand/right/input/trigger/value"},
-      {kRightGrip, "/user/hand/right/input/squeeze/click"}}},
+      {kRightGrip, "/user/hand/right/input/squeeze/click"},
+      {kAimPose, "/user/hand/right/input/aim/pose"}}},
     {"/interaction_profiles/khr/simple_controller",
      {{kConfirm, "/user/hand/left/input/select/click"},
       {kConfirm, "/user/hand/right/input/select/click"},
       {kBack, "/user/hand/left/input/menu/click"},
-      {kBack, "/user/hand/right/input/menu/click"}}},
+      {kBack, "/user/hand/right/input/menu/click"},
+      {kAimPose, "/user/hand/right/input/aim/pose"}}},
 };
 
 bool CreateAction(XrActionSet set, XrActionType type, const char* name, const char* label, XrAction* action)
@@ -112,6 +165,20 @@ void NoteGameplayFrame()
 {
     const ULONGLONG now = GetTickCount64();
     g_gameplayTick = now ? now : 1;
+}
+
+unsigned TakeViewCycleRequests()
+{
+    return g_viewCycleRequests.exchange(0);
+}
+
+bool GetAimPose(float quat[4])
+{
+    std::lock_guard lock(g_aimMutex);
+    if (!g_aimTick || GetTickCount64() - g_aimTick > kAimMaxAgeMs)
+        return false;
+    memcpy(quat, g_aimQuat, sizeof(g_aimQuat));
+    return true;
 }
 
 void MenuInput::ReadConfig()
@@ -132,6 +199,10 @@ void MenuInput::ReadConfig()
     };
     assign(jump_, "jump_scan", kScanJump);
     assign(crouch_, "crouch_scan", kScanCrouch);
+    wheelButton_ = config::Int("Controls", "wheel_button", input::vpad::kEast);
+    if (wheelButton_ < 0 || wheelButton_ >= input::vpad::kButtonCount)
+        wheelButton_ = input::vpad::kEast;
+    wheelToggle_ = config::Int("Controls", "wheel_toggle", 1) != 0;
 }
 
 bool MenuInput::Init(XrInstance instance, XrSession session)
@@ -162,13 +233,16 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "back", "Retour (Echap)", &back_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_trigger", "Ctrl", &leftTrigger_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_trigger", "Maj", &rightTrigger_) ||
-        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_grip", "Interagir (E)", &rightGrip_)) {
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_grip", "Interagir (E)", &rightGrip_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Viser (main droite)", &aimPose_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_click", "Changer de vue", &leftClick_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_click", "Roue des armes", &rightClick_)) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
         return false;
     }
 
     const XrAction actions[kActionCount] = {leftStick_, rightStick_, confirm_, back_, leftTrigger_, rightTrigger_,
-                                            rightGrip_};
+                                            rightGrip_, aimPose_, leftClick_, rightClick_};
     int accepted = 0;
     for (const Profile& profile : kProfiles) {
         std::vector<XrActionSuggestedBinding> suggested;
@@ -191,6 +265,14 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
     if (!accepted || XR_FAILED(xrAttachSessionActionSets(session, &ai))) {
         LOG_XR("ERREUR : xrAttachSessionActionSets, manettes desactivees");
         return false;
+    }
+    // Espace de la pose de visée : sert à situer la manette droite à chaque image
+    XrActionSpaceCreateInfo sci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
+    sci.action = aimPose_;
+    sci.poseInActionSpace.orientation.w = 1.0f;
+    if (XR_FAILED(xrCreateActionSpace(session, &sci, &aimSpace_))) {
+        aimSpace_ = XR_NULL_HANDLE;
+        LOG_XR("manettes : espace de visee non cree, pas de visee a la main");
     }
     ready_ = true;
     LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%.0f px/s), "
@@ -239,9 +321,73 @@ void MenuInput::ReleaseAll()
     SetKey(crouch_, false, false);
     direction_ = -1;
     turnRemainder_ = 0.0f;
+    PublishAim(nullptr);
+    wheelOpen_ = false;
+    wheelCloseTick_ = 0;
+    input::vpad::Reset();
 }
 
-void MenuInput::Update(XrSession session, bool focused)
+// Roue des armes. Sur la manette du jeu, elle s'ouvre tant qu'un bouton est tenu (B par défaut)
+// et le stick gauche désigne l'arme, prise au relâchement du bouton. Ici : un clic du stick
+// droit l'ouvre, le stick droit désigne, et le laisser revenir au centre prend l'arme (ou un
+// second clic). Avec [Controls] wheel_toggle=0, la roue reste ouverte tant que le clic est tenu.
+void MenuInput::UpdateWheel(bool gameplay, bool click, float rx, float ry, ULONGLONG now)
+{
+    namespace vpad = input::vpad;
+    const bool pressed = click && !rightClickHeld_;
+    rightClickHeld_ = click;
+    if (!vpad::Ready()) {
+        wheelOpen_ = false;
+        return;
+    }
+
+    const float magnitude = std::sqrt(rx * rx + ry * ry);
+    bool close = false;
+    if (!wheelOpen_) {
+        if (gameplay && !wheelCloseTick_ && (wheelToggle_ ? pressed : click)) {
+            wheelOpen_ = true;
+            wheelPointed_ = false;
+            wheelDir_[0] = wheelDir_[1] = 0.0f;
+            LOG_XR("manettes : roue des armes ouverte (bouton %d de la manette virtuelle)", wheelButton_);
+        }
+    } else if (!gameplay) {
+        close = true; // pause, menu : on lâche tout
+    } else if (wheelToggle_) {
+        close = pressed || (wheelPointed_ && magnitude < kWheelRelease);
+    } else {
+        close = !click;
+    }
+
+    if (wheelOpen_ && !close) {
+        if (magnitude > kWheelPoint) {
+            wheelPointed_ = true;
+            wheelDir_[0] = rx / magnitude;
+            wheelDir_[1] = ry / magnitude;
+        }
+        vpad::SetButton(wheelButton_, true);
+        // Stick droit -> stick gauche de la manette ; y vers le bas pour SDL. Tant qu'aucune
+        // arme n'est désignée, le stick suit la main ; ensuite il garde la dernière direction.
+        const float x = magnitude > kWheelRelease ? rx : wheelDir_[0];
+        const float y = magnitude > kWheelRelease ? ry : wheelDir_[1];
+        vpad::SetAxis(vpad::kLeftX, x);
+        vpad::SetAxis(vpad::kLeftY, -y);
+    } else if (wheelOpen_) {
+        // Fermeture : bouton relâché, stick encore pointé un instant
+        wheelOpen_ = false;
+        wheelWaitCenter_ = true;
+        wheelCloseTick_ = now + kWheelSettleMs;
+        vpad::SetButton(wheelButton_, false);
+        vpad::SetAxis(vpad::kLeftX, wheelDir_[0]);
+        vpad::SetAxis(vpad::kLeftY, -wheelDir_[1]);
+        LOG_XR("manettes : roue des armes fermee%s", wheelPointed_ ? "" : " sans choix");
+    } else if (wheelCloseTick_ && now >= wheelCloseTick_) {
+        wheelCloseTick_ = 0;
+        vpad::SetAxis(vpad::kLeftX, 0.0f);
+        vpad::SetAxis(vpad::kLeftY, 0.0f);
+    }
+}
+
+void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime time)
 {
     LARGE_INTEGER counter, frequency;
     QueryPerformanceCounter(&counter);
@@ -262,6 +408,11 @@ void MenuInput::Update(XrSession session, bool focused)
         lastConfig_ = now;
         ReadConfig();
     }
+    // Manette virtuelle : attachée dès que la SDL du jeu est prête
+    if (!input::vpad::Ready() && now - lastAttach_ >= 2000) {
+        lastAttach_ = now;
+        input::vpad::Attach();
+    }
 
     XrActiveActionSet active{set_, XR_NULL_PATH};
     XrActionsSyncInfo sync{XR_TYPE_ACTIONS_SYNC_INFO};
@@ -271,6 +422,15 @@ void MenuInput::Update(XrSession session, bool focused)
         ReleaseAll();
         return;
     }
+
+    // Manette droite : où elle pointe, à l'instant d'affichage
+    XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION};
+    const XrSpaceLocationFlags aimFlags =
+        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
+    const bool aimed = aimSpace_ != XR_NULL_HANDLE && base != XR_NULL_HANDLE &&
+                       XR_SUCCEEDED(xrLocateSpace(aimSpace_, base, time, &aim)) &&
+                       (aim.locationFlags & aimFlags) == aimFlags;
+    PublishAim(aimed ? &aim.pose.orientation : nullptr);
 
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
     const auto pressed = [&](XrAction action) {
@@ -301,6 +461,25 @@ void MenuInput::Update(XrSession session, bool focused)
     if (static_cast<int>(gameplay) != gameplayShown_) {
         LOG_XR("manettes : mode %s", gameplay ? "partie (deplacement, tourner, interagir)" : "menus (fleches)");
         gameplayShown_ = gameplay;
+    }
+
+    // Clic du stick gauche : vue suivante (en partie seulement)
+    const bool leftClick = pressed(leftClick_);
+    if (leftClick && !leftClickHeld_ && gameplay)
+        ++g_viewCycleRequests;
+    leftClickHeld_ = leftClick;
+
+    // Roue des armes : tant qu'elle est ouverte, les sticks ne servent qu'à elle
+    UpdateWheel(gameplay, pressed(rightClick_), rx, ry, now);
+    if (wheelOpen_) {
+        lx = ly = rx = ry = 0.0f;
+    } else if (wheelWaitCenter_) {
+        // La roue vient de se fermer : le stick droit ne fait ni tourner ni sauter avant d'être
+        // revenu au centre
+        if (rx * rx + ry * ry < kWheelRelease * kWheelRelease)
+            wheelWaitCenter_ = false;
+        else
+            rx = ry = 0.0f;
     }
 
     if (gameplay) {

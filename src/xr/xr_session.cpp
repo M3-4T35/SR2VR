@@ -622,7 +622,7 @@ void XrApp::RenderFrame()
         }
     }
 
-    input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED);
+    input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED, localSpace_, fs.predictedDisplayTime);
 
     const ULONGLONG tick = GetTickCount64();
     if (tick - lastConfig_ >= 1000) {

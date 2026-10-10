@@ -49,10 +49,19 @@
 // celle de la caméra du jeu (son cap) composée avec la tête. Comme pour l'orientation, le jeu
 // retrouve sa propre position avant sa mise à jour suivante. La préparation de l'image recopie
 // la position finale dans la caméra de rendu : le rendu suit sans rien de plus.
+// Vues, changées par le clic du stick gauche : à pied, yeux du personnage ou caméra du jeu ; en
+// véhicule, yeux du conducteur, devant le pare-brise (certaines voitures ont des vitres teintées
+// opaques de l'intérieur) ou caméra du jeu.
+//
+// Interface en partie ([Hud]) : en vue immersive, le document de l'interface est rapetissé
+// autour du centre de l'image (engine/hud) pour rentrer dans le champ du casque, et décalé
+// d'un œil à l'autre pour flotter à quelques mètres. Le décalage de l'œil est posé juste avant
+// la préparation de son image.
 //
 // Aucune adresse codée en dur : fonctions trouvées par signature, adresses des variables lues
 // dans leur code.
 #include "engine/camera_hook.h"
+#include "engine/hud.h"
 #include "engine/player.h"
 #include "util/config.h"
 #include "util/log.h"
@@ -140,6 +149,7 @@ int* g_frameCounter = nullptr;       // compteur d'images du jeu (un cran par im
 uint8_t* g_pendingCamera = nullptr;  // caméra en attente : demandes de la simulation au rendu
 const int* g_cameraMode = nullptr;   // mode de caméra du jeu (0 : caméra normale à la 3e personne)
 bool g_playerReady = false;          // engine::player installé
+bool g_hudReady = false;             // engine::hud installé
 
 bool Paused()
 {
@@ -242,6 +252,14 @@ struct Settings {
     float fpForward = 0.12f;     // décalage des yeux vers l'avant du regard, en mètres
     float fpUp = 0.06f;          // décalage vers le haut
     float fpSmooth = 0.12f;      // constante de temps du filtre sur la tête, en secondes (0 : aucun)
+    int fpVehicleView = 0;       // en véhicule : 0 yeux du conducteur, 1 devant le pare-brise, 2 caméra du jeu
+    float fpVehicleForward = 0.9f; // vue « devant le pare-brise » : avance le long du véhicule, en mètres
+    float fpVehicleUp = 0.15f;     // et hauteur au-dessus de la tête
+    float hudScale = 1.0f;       // échelle de l'interface en partie (1 = celle du jeu)
+    float hudOffsetY = 0.0f;     // décalage vertical de l'interface, en unités de 720 (positif = vers le bas)
+    float hudDistance = 0.0f;    // distance à laquelle l'interface flotte en relief, en mètres (0 = infini)
+    bool immersive = false;      // [Display] mode >= 1
+    bool handAim = false;        // la visée du jeu suit la manette droite, plus le regard
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -268,6 +286,7 @@ void ReadConfig()
     // baisse le regard ; la caméra 3e personne du jeu, elle, plonge de 10° environ), caméra du
     // jeu intacte sur l'écran virtuel
     s.levelHorizon = config::Int("Camera", "level_horizon", mode >= 1 ? 1 : 0) != 0;
+    s.immersive = mode >= 1;
     s.stereo = mode >= 2;
     s.pairs = mode == 3;
     s.pairCounter = config::Int("Stereo", "pair_counter", 1) != 0;
@@ -280,6 +299,7 @@ void ReadConfig()
     s.swapEyes = config::Int("Stereo", "swap_eyes", 0) != 0;
     s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
     s.cutsceneScreen = config::Int("Display", "cutscene_screen", 1) != 0;
+    s.handAim = config::Int("Hands", "aim", 0) != 0;
     s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
     s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
     s.fpUp = config::Float("FirstPerson", "up", 0.06f);
@@ -290,6 +310,24 @@ void ReadConfig()
         s.fpUp = 0.06f;
     if (!(s.fpSmooth >= 0.0f && s.fpSmooth < 5.0f))
         s.fpSmooth = 0.12f;
+    s.fpVehicleView = config::Int("FirstPerson", "vehicle_view", 0);
+    if (s.fpVehicleView < 0 || s.fpVehicleView > 2)
+        s.fpVehicleView = 0;
+    s.fpVehicleForward = config::Float("FirstPerson", "vehicle_forward", 0.9f);
+    s.fpVehicleUp = config::Float("FirstPerson", "vehicle_up", 0.15f);
+    if (!(s.fpVehicleForward > -5.0f && s.fpVehicleForward < 5.0f))
+        s.fpVehicleForward = 0.9f;
+    if (!(s.fpVehicleUp > -3.0f && s.fpVehicleUp < 3.0f))
+        s.fpVehicleUp = 0.15f;
+    s.hudScale = config::Float("Hud", "scale", 0.38f);
+    if (!(s.hudScale >= 0.1f && s.hudScale <= 1.0f))
+        s.hudScale = 0.38f;
+    s.hudOffsetY = config::Float("Hud", "offset_y", 0.0f);
+    if (!(s.hudOffsetY > -720.0f && s.hudOffsetY < 720.0f))
+        s.hudOffsetY = 0.0f;
+    s.hudDistance = config::Float("Hud", "distance", 3.0f);
+    if (!(s.hudDistance > -100.0f && s.hudDistance < 100.0f))
+        s.hudDistance = 3.0f;
     std::lock_guard lock(g_settingsMutex);
     g_settings = s;
 }
@@ -400,15 +438,65 @@ bool FirstPersonAllowed()
     return mode != 2 && mode != 5 && mode != 10 && mode != 11;
 }
 
-// Position des yeux du personnage. game : orientation de la caméra du jeu (son cap donne
-// l'avant). false : pas de joueur ou pas de squelette, la caméra du jeu reste en place.
+// Vue choisie, changée par le clic du stick gauche (ou par sr2_vr.ini quand sa valeur change)
+enum : int { kFootEyes = 0, kFootGame = 1 };
+enum : int { kVehicleEyes = 0, kVehicleFront = 1, kVehicleGame = 2 };
+int g_footView = kFootEyes;
+int g_vehicleView = kVehicleEyes;
+int g_iniFoot = -1;    // dernières valeurs lues dans sr2_vr.ini
+int g_iniVehicle = -1;
+bool g_inVehicle = false;
+
+const char* ViewName(bool vehicle, int view)
+{
+    if (!vehicle)
+        return view == kFootEyes ? "yeux du personnage" : "camera du jeu (3e personne)";
+    return view == kVehicleEyes    ? "yeux du conducteur"
+           : view == kVehicleFront ? "devant le pare-brise"
+                                   : "camera du jeu (3e personne)";
+}
+
+// Réglages et clics : met à jour la vue à pied et la vue en véhicule
+void UpdateViewChoice(const Settings& s, bool vehicle)
+{
+    const int iniFoot = s.firstPerson ? kFootEyes : kFootGame;
+    if (iniFoot != g_iniFoot) {
+        g_iniFoot = g_footView = iniFoot;
+    }
+    // [FirstPerson] enabled=0 : caméra du jeu partout
+    const int iniVehicle = s.firstPerson ? s.fpVehicleView : static_cast<int>(kVehicleGame);
+    if (iniVehicle != g_iniVehicle) {
+        g_iniVehicle = g_vehicleView = iniVehicle;
+    }
+    for (unsigned clicks = xr::TakeViewCycleRequests(); clicks; --clicks) {
+        if (vehicle)
+            g_vehicleView = (g_vehicleView + 1) % 3;
+        else
+            g_footView = g_footView == kFootEyes ? kFootGame : kFootEyes;
+        LOG_ENGINE("vue demandee aux manettes, %s : %s", vehicle ? "en vehicule" : "a pied",
+                   ViewName(vehicle, vehicle ? g_vehicleView : g_footView));
+    }
+}
+
+// Position de la caméra à la première personne. game : orientation de la caméra du jeu (son
+// cap donne l'avant à pied). false : vue du jeu demandée, pas de joueur ou pas de squelette ;
+// la caméra du jeu reste en place.
 bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
 {
-    float head[3], root[3];
-    if (!player::HeadPosition(head, root)) {
+    float head[3], root[3], body[9];
+    if (!player::HeadPosition(head, root, body)) {
         g_headOffsetValid = false;
         return false;
     }
+    g_inVehicle = player::InVehicle();
+    UpdateViewChoice(s, g_inVehicle);
+    const int view = g_inVehicle ? g_vehicleView : g_footView;
+    const int gameView = g_inVehicle ? static_cast<int>(kVehicleGame) : static_cast<int>(kFootGame);
+    if (view == gameView) {
+        g_headOffsetValid = false;
+        return false;
+    }
+
     LARGE_INTEGER now, frequency;
     QueryPerformanceCounter(&now);
     QueryPerformanceFrequency(&frequency);
@@ -432,17 +520,64 @@ bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
     }
     g_headHeight = g_headOffset[1];
 
-    float level[9];
-    LevelOrientation(game, level);
-    for (int k = 0; k < 3; ++k)
-        eye[k] = root[k] + g_headOffset[k] + s.fpForward * level[6 + k] + s.fpUp * level[3 + k];
+    if (g_inVehicle && view == kVehicleFront) {
+        // Devant le pare-brise : le long de l'avant du siège (donc du véhicule), pas du regard
+        for (int k = 0; k < 3; ++k)
+            eye[k] = root[k] + g_headOffset[k] + s.fpVehicleForward * body[6 + k] + s.fpVehicleUp * body[3 + k];
+    } else {
+        float level[9];
+        LevelOrientation(game, level);
+        for (int k = 0; k < 3; ++k)
+            eye[k] = root[k] + g_headOffset[k] + s.fpForward * level[6 + k] + s.fpUp * level[3 + k];
+    }
     return true;
+}
+
+// --- Interface en partie ------------------------------------------------------------------
+
+float g_hudApplied[3]{1.0f, 0.0f, 0.0f}; // échelle, x, y posés en dernier
+float g_lastFov = 64.0f;                  // dernier champ de vue horizontal du rendu, en degrés
+ULONGLONG g_hudAppliedTick = 0;
+
+// Place l'interface pour l'image qui va être préparée. eye : -1 hors relief (pas de décalage),
+// sinon 0 ou 1. hfov : champ de vue horizontal du rendu, en degrés. Thread de simulation.
+void PlaceHud(const Settings& s, bool immersed, int eye, float ipd, float hfov)
+{
+    if (!g_hudReady)
+        return;
+    // Seulement quand l'image entoure la tête : sur l'écran virtuel (menus, casque posé),
+    // l'interface garde sa taille
+    const bool shrink = s.immersive && immersed && s.hudScale < 0.999f;
+    const float scale = shrink ? s.hudScale : 1.0f;
+    float x = 0.0f, y = 0.0f;
+    if (shrink) {
+        x = 640.0f * (1.0f - scale);
+        y = 360.0f * (1.0f - scale) + s.hudOffsetY;
+        if (eye >= 0 && s.hudDistance != 0.0f && hfov > 1.0f && hfov < 179.0f) {
+            // Un point à la distance d, droit devant, se voit décalé de (écart / 2) / d dans
+            // chaque œil ; la demi-largeur de l'image (640 unités) vaut tan(hfov / 2).
+            const float shift = 0.5f * ipd * s.ipdScale / s.hudDistance / std::tan(hfov * 0.5f * 0.01745329f) * 640.0f;
+            const bool left = (eye == 0) == !s.swapEyes;
+            x += left ? shift : -shift;
+        }
+    }
+    // Reposé quand il change, et une fois par seconde : le document est recréé à chaque
+    // chargement de partie
+    const ULONGLONG now = GetTickCount64();
+    if (scale == g_hudApplied[0] && x == g_hudApplied[1] && y == g_hudApplied[2] && now - g_hudAppliedTick < 1000)
+        return;
+    hud::Place(scale, x, y);
+    g_hudApplied[0] = scale;
+    g_hudApplied[1] = x;
+    g_hudApplied[2] = y;
+    g_hudAppliedTick = now;
 }
 
 ULONGLONG g_lastStats = 0;
 int g_lastState = -1;
 int g_lastCameraMode = -1;
 int g_lastFirstPerson = -1;
+int g_lastHandAim = -1;
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -486,10 +621,19 @@ void __cdecl HkUpdateCamera()
         LOG_ENGINE("jeu : %s", kNames[state]);
         g_lastState = state;
     }
+    // Avec [Hands] aim=1, la caméra de la simulation (visée, tir) suit la manette droite ; la
+    // caméra de rendu, elle, reste sur le regard (OnRenderCamera compose avec la tête).
+    bool handAim = false;
     if (tracked && s.headTracking && state == kPlaying) {
-        HeadedOrientation(game, quat, s, g_written);
+        float aim[4];
+        handAim = s.handAim && xr::GetAimPose(aim);
+        HeadedOrientation(game, handAim ? aim : quat, s, g_written);
         memcpy(g_orient, g_written, sizeof(g_written));
         g_applied = true;
+    }
+    if (static_cast<int>(handAim) != g_lastHandAim && state == kPlaying) {
+        LOG_ENGINE("visee : %s", handAim ? "manette droite" : "regard");
+        g_lastHandAim = handAim;
     }
 
     // Première personne : la caméra finale passe aux yeux du personnage
@@ -498,7 +642,7 @@ void __cdecl HkUpdateCamera()
         g_lastCameraMode = *g_cameraMode;
     }
     bool firstPerson = false;
-    if (s.firstPerson && state == kPlaying && FirstPersonAllowed()) {
+    if (state == kPlaying && FirstPersonAllowed()) {
         float eye[3];
         if (FirstPersonEye(game, s, eye)) {
             memcpy(g_gamePos, g_pos, sizeof(g_gamePos));
@@ -510,10 +654,13 @@ void __cdecl HkUpdateCamera()
     } else {
         g_headOffsetValid = false;
     }
-    if (static_cast<int>(firstPerson) != g_lastFirstPerson) {
-        LOG_ENGINE("vue : %s", firstPerson ? "premiere personne (camera aux yeux du personnage)"
-                                           : "camera du jeu (3e personne)");
-        g_lastFirstPerson = firstPerson;
+    // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
+    const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
+    if (shownView != g_lastFirstPerson && state == kPlaying) {
+        LOG_ENGINE("vue : %s%s", firstPerson ? ViewName(g_inVehicle, g_inVehicle ? g_vehicleView : g_footView)
+                                             : "camera du jeu (3e personne)",
+                   firstPerson && g_inVehicle ? " (en vehicule)" : "");
+        g_lastFirstPerson = shownView;
     }
 
     // Relevé : première image, puis toutes les 10 s
@@ -587,6 +734,7 @@ void OnRenderCamera(double* fov)
     xr::NoteGameplayFrame();
     if (s.hfov > 0.0f)
         *fov = s.hfov;
+    g_lastFov = static_cast<float>(*fov);
 
     float quat[4];
     float ipd = 0.063f;
@@ -643,9 +791,13 @@ int __cdecl HkRenderFrame()
 {
     const Settings s = CurrentSettings();
     Pair pair;
-    if (!s.pairs || !g_pendingCamera || !s.headTracking || GameState(s) != kPlaying ||
-        !xr::GetHeadPose(pair.quat, &pair.ipd))
+    const bool immersed = xr::GetHeadPose(pair.quat, &pair.ipd) && s.headTracking && GameState(s) == kPlaying;
+    const float hfov = s.hfov > 0.0f ? s.hfov : g_lastFov;
+    if (!s.pairs || !g_pendingCamera || !immersed) {
+        // Un œil par image : l'interface se décale pour l'œil qu'OnRenderCamera va choisir
+        PlaceHud(s, immersed, s.stereo && immersed ? static_cast<int>(g_eyeCounter & 1) : -1, pair.ipd, hfov);
         return g_renderFrame();
+    }
 
     // Ce que la simulation a demandé au rendu pour cette image, à redonner à l'œil droit
     uint8_t pending[kPendingCameraSize];
@@ -657,6 +809,7 @@ int __cdecl HkRenderFrame()
     pair.id = g_pairCounter;
     pair.eye = 0;
     g_pair = pair;
+    PlaceHud(s, true, 0, pair.ipd, hfov);
     const int result = g_renderFrame();
     // Image sans caméra de jeu (chargement, menu principal) : rien à rendre pour l'autre œil
     if (g_pair.viewed) {
@@ -665,6 +818,7 @@ int __cdecl HkRenderFrame()
         if (s.pairCounter && g_frameCounter)
             ++*g_frameCounter;
         g_pair.eye = 1;
+        PlaceHud(s, true, 1, pair.ipd, hfov);
         g_renderFrame();
         ++g_pairsRendered;
     }
@@ -809,6 +963,13 @@ bool InstallCameraHook()
     // Première personne : le joueur et son squelette
     if (g_updateCameraTarget && g_pos) {
         g_playerReady = player::Install();
+        // Table des objets du jeu : juste après la signature de UpdateCamera, mov ebp,[ecx+<table>]
+        constexpr int kObjectTableOffset = 36;
+        if (update[kObjectTableOffset] == 0x8B && update[kObjectTableOffset + 1] == 0xA9)
+            player::SetObjectTable(absolute(update + kObjectTableOffset + 2));
+        else
+            LOG_ENGINE("table des objets introuvable dans UpdateCamera : vehicules non reconnus");
+        g_hudReady = hud::Install();
         LOG_ENGINE("mode de camera du jeu : %s", g_cameraMode ? "trouve" : "introuvable (premiere personne dans tous les modes)");
     }
 

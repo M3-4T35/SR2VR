@@ -16,8 +16,17 @@ namespace engine::player {
 // première personne.
 bool Install();
 
-// Position du monde du repère « head » du joueur et de sa racine. false : pas de joueur, pas
-// de squelette prêt, ou résultat aberrant.
-bool HeadPosition(float head[3], float root[3]);
+// Table des objets du jeu (16 octets par entrée, un objet se retrouve par son numéro) : sert
+// à savoir si le joueur est dans un véhicule. Lue par le hook de caméra dans UpdateCamera.
+void SetObjectTable(const void* table);
+
+// Position du monde du repère « head » du joueur et de sa racine, orientation de la racine
+// (matrice 3x3 de Volition : droite, haut, avant ; en véhicule, c'est celle du siège). false :
+// pas de joueur, pas de squelette prêt, ou résultat aberrant.
+bool HeadPosition(float head[3], float root[3], float orient[9]);
+
+// Le joueur est dans un véhicule (même test que la fonction Lua du jeu
+// « is_local_player_in_vehicle » : numéro de véhicule du joueur en +0xD74, objet de type 5).
+bool InVehicle();
 
 } // namespace engine::player

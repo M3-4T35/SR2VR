@@ -58,15 +58,26 @@
 // d'un œil à l'autre pour flotter à quelques mètres. Le décalage de l'œil est posé juste avant
 // la préparation de son image.
 //
+// Visée ([Hands] aim, laser). La caméra de simulation suit le regard : c'est lui qui donne le
+// sens de la marche. Le tir, lui, suit un rayon à part (engine/aim) : celui de la manette qui
+// tire, ou celui du regard si elle n'est pas suivie. Ce module fournit ces rayons (AimRay) et
+// publie pour chaque main la distance du point visé : le casque dessine alors lui-même un
+// trait depuis la manette et un point à l'impact (xr/xr_laser). L'ancien dessin dans l'image
+// du jeu (render/sight_overlay) reste disponible avec laser=3.
+//
 // Aucune adresse codée en dur : fonctions trouvées par signature, adresses des variables lues
 // dans leur code.
 #include "engine/camera_hook.h"
+#include "engine/aim.h"
+#include "engine/controls.h"
+#include "engine/hands.h"
 #include "engine/hud.h"
 #include "engine/player.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
 #include "xr/xr_input.h"
+#include "xr/xr_laser.h"
 #include "xr/xr_session.h"
 
 #include <MinHook.h>
@@ -180,6 +191,8 @@ float g_headOffset[3]{};  // écart racine -> tête, filtré
 bool g_headOffsetValid = false;
 LARGE_INTEGER g_headTime{};
 float g_headHeight = 0.0f; // relevé : hauteur de la tête au-dessus de la racine
+float g_eyeFromRoot[3]{};  // des pieds du personnage à la caméra à la première personne
+bool g_handsReady = false; // engine::hands installé
 // Orientation calculée par le jeu à la dernière mise à jour, lue aussi par le thread du rendu
 std::mutex g_gameMutex;
 float g_gameOrient[9]{};
@@ -193,6 +206,7 @@ struct PendingView {
     unsigned pair = 0; // vrai relief : numéro de la paire, 0 sinon
     float fov = 0.0f;
     ULONGLONG tick = 0;
+    render::SightOverlay sight; // repère de visée projeté avec la caméra de cette image
 };
 
 // Vrai relief : paire en cours de préparation (thread de simulation uniquement). Les deux
@@ -259,7 +273,11 @@ struct Settings {
     float hudOffsetY = 0.0f;     // décalage vertical de l'interface, en unités de 720 (positif = vers le bas)
     float hudDistance = 0.0f;    // distance à laquelle l'interface flotte en relief, en mètres (0 = infini)
     bool immersive = false;      // [Display] mode >= 1
-    bool handAim = false;        // la visée du jeu suit la manette droite, plus le regard
+    bool handAim = true;         // le tir suit le rayon de la manette (sinon celui du regard)
+    // repère de visée : 0 aucun (réticule du jeu), 1 trait et point, 2 point seul (dessinés par
+    // le casque), 3 trait et point dessinés dans l'image du jeu (ancien mode)
+    int laser = 1;
+    bool handArms = false;       // les bras du personnage sont amenés aux manettes
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -299,7 +317,11 @@ void ReadConfig()
     s.swapEyes = config::Int("Stereo", "swap_eyes", 0) != 0;
     s.interfaceScreen = config::Int("Display", "interface_screen", 1) != 0;
     s.cutsceneScreen = config::Int("Display", "cutscene_screen", 1) != 0;
-    s.handAim = config::Int("Hands", "aim", 0) != 0;
+    s.handAim = config::Int("Hands", "aim", 1) != 0;
+    s.laser = config::Int("Hands", "laser", 1);
+    if (s.laser < 0 || s.laser > 3)
+        s.laser = 1;
+    s.handArms = config::Int("Hands", "arms", 0) != 0;
     s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
     s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
     s.fpUp = config::Float("FirstPerson", "up", 0.06f);
@@ -401,16 +423,23 @@ void ComposeWithHead(const float game[9], const float head[9], const bool mirror
     }
 }
 
+// Repère du monde dans lequel vit l'espace du casque : la caméra du jeu, remise à plat si
+// demandé (droite, haut, avant)
+void HeadBase(const float game[9], const Settings& s, float base[9])
+{
+    if (s.levelHorizon)
+        LevelOrientation(game, base);
+    else
+        memcpy(base, game, 9 * sizeof(float));
+}
+
 // Orientation de la caméra avec la tête : celle du jeu (remise à plat si demandé) composée
 // avec le casque
 void HeadedOrientation(const float game[9], const float quat[4], const Settings& s, float out[9])
 {
     float head[9], base[9];
     QuatToMatrix(quat, head);
-    if (s.levelHorizon)
-        LevelOrientation(game, base);
-    else
-        memcpy(base, game, sizeof(base));
+    HeadBase(game, s, base);
     ComposeWithHead(base, head, s.mirror, out);
 }
 
@@ -530,12 +559,17 @@ bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
         for (int k = 0; k < 3; ++k)
             eye[k] = root[k] + g_headOffset[k] + s.fpForward * level[6 + k] + s.fpUp * level[3 + k];
     }
+    for (int k = 0; k < 3; ++k)
+        g_eyeFromRoot[k] = eye[k] - root[k];
     return true;
 }
 
 // --- Interface en partie ------------------------------------------------------------------
 
 float g_hudApplied[3]{1.0f, 0.0f, 0.0f}; // échelle, x, y posés en dernier
+int g_reticleShown = -1;                 // réticule du jeu : 1 montré, 0 caché, -1 pas encore décidé
+ULONGLONG g_reticleTick = 0;
+bool g_sightDrawn = false;               // le mod dessine son repère de visée en ce moment
 float g_lastFov = 64.0f;                  // dernier champ de vue horizontal du rendu, en degrés
 ULONGLONG g_hudAppliedTick = 0;
 
@@ -545,6 +579,17 @@ void PlaceHud(const Settings& s, bool immersed, int eye, float ipd, float hfov)
 {
     if (!g_hudReady)
         return;
+    // Réticule du jeu : caché tant que le mod dessine son propre repère (reposé une fois par
+    // seconde, le document étant recréé à chaque chargement)
+    const int reticle = immersed && s.laser != 0 && g_sightDrawn ? 0 : 1;
+    const ULONGLONG tick = GetTickCount64();
+    if (reticle != g_reticleShown || tick - g_reticleTick >= 1000) {
+        // Rien à remontrer si on ne l'a jamais caché
+        if (reticle == 0 || g_reticleShown == 0)
+            hud::ShowReticle(reticle != 0);
+        g_reticleShown = reticle;
+        g_reticleTick = tick;
+    }
     // Seulement quand l'image entoure la tête : sur l'écran virtuel (menus, casque posé),
     // l'interface garde sa taille
     const bool shrink = s.immersive && immersed && s.hudScale < 0.999f;
@@ -577,7 +622,74 @@ ULONGLONG g_lastStats = 0;
 int g_lastState = -1;
 int g_lastCameraMode = -1;
 int g_lastFirstPerson = -1;
-int g_lastHandAim = -1;
+int g_lastAimSource = -1;
+bool g_aimReady = false;   // engine::aim installé
+bool g_aimAllowed = false; // en partie, tête suivie : le jeu vise avec nos rayons
+bool g_laserShown = false; // le casque dessine le repère d'au moins une main
+bool g_handsAllowed = false; // première personne à pied, tête suivie : les bras suivent les manettes
+
+// Rayon de visée demandé par engine/aim au moment où le jeu vise : celui d'une manette (hand 0
+// ou 1 : pose « aim » la plus récente, départ = caméra, donc les yeux du personnage à la
+// première personne, plus l'écart manette - tête) ou celui du regard (hand -1). Thread de
+// simulation.
+bool AimRay(int hand, float origin[3], float orient[9])
+{
+    if (!g_aimAllowed || !g_pos)
+        return false;
+    const Settings s = CurrentSettings();
+    float game[9];
+    {
+        std::lock_guard lock(g_gameMutex);
+        if (!g_gameOrientValid)
+            return false;
+        memcpy(game, g_gameOrient, sizeof(game));
+    }
+    memcpy(origin, g_pos, 3 * sizeof(float));
+    float quat[4];
+    if (hand < 0) {
+        if (!xr::GetHeadPose(quat, nullptr))
+            return false;
+        HeadedOrientation(game, quat, s, orient);
+        return true;
+    }
+    float offset[3];
+    if (!s.handAim || !xr::GetAimRay(hand, quat, offset))
+        return false;
+    float base[9];
+    HeadBase(game, s, base);
+    HeadedOrientation(game, quat, s, orient);
+    for (int k = 0; k < 3; ++k)
+        origin[k] += s.worldScale * (offset[0] * base[k] + offset[1] * base[3 + k] - offset[2] * base[6 + k]);
+    return true;
+}
+
+// Pose d'une manette demandée par engine/hands au moment de poser les bras : creux de la main et
+// départ du rayon de visée, en vecteurs du monde comptés depuis les yeux, et orientation du
+// rayon. Thread de simulation.
+bool HandFrame(int hand, float grip[3], float origin[3], float orient[9])
+{
+    if (!g_handsAllowed)
+        return false;
+    const Settings s = CurrentSettings();
+    float game[9];
+    {
+        std::lock_guard lock(g_gameMutex);
+        if (!g_gameOrientValid)
+            return false;
+        memcpy(game, g_gameOrient, sizeof(game));
+    }
+    float quat[4], aimOffset[3], gripOffset[3];
+    if (!xr::GetAimRay(hand, quat, aimOffset) || !xr::GetHandOffset(hand, gripOffset))
+        return false;
+    float base[9];
+    HeadBase(game, s, base);
+    HeadedOrientation(game, quat, s, orient);
+    for (int k = 0; k < 3; ++k) {
+        grip[k] = s.worldScale * (gripOffset[0] * base[k] + gripOffset[1] * base[3 + k] - gripOffset[2] * base[6 + k]);
+        origin[k] = s.worldScale * (aimOffset[0] * base[k] + aimOffset[1] * base[3 + k] - aimOffset[2] * base[6 + k]);
+    }
+    return true;
+}
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -621,19 +733,12 @@ void __cdecl HkUpdateCamera()
         LOG_ENGINE("jeu : %s", kNames[state]);
         g_lastState = state;
     }
-    // Avec [Hands] aim=1, la caméra de la simulation (visée, tir) suit la manette droite ; la
-    // caméra de rendu, elle, reste sur le regard (OnRenderCamera compose avec la tête).
-    bool handAim = false;
-    if (tracked && s.headTracking && state == kPlaying) {
-        float aim[4];
-        handAim = s.handAim && xr::GetAimPose(aim);
-        HeadedOrientation(game, handAim ? aim : quat, s, g_written);
+    // La caméra de la simulation suit le regard : culling, son et sens de la marche
+    const bool headed = tracked && s.headTracking && state == kPlaying;
+    if (headed) {
+        HeadedOrientation(game, quat, s, g_written);
         memcpy(g_orient, g_written, sizeof(g_written));
         g_applied = true;
-    }
-    if (static_cast<int>(handAim) != g_lastHandAim && state == kPlaying) {
-        LOG_ENGINE("visee : %s", handAim ? "manette droite" : "regard");
-        g_lastHandAim = handAim;
     }
 
     // Première personne : la caméra finale passe aux yeux du personnage
@@ -653,6 +758,40 @@ void __cdecl HkUpdateCamera()
         }
     } else {
         g_headOffsetValid = false;
+    }
+    // Visée : le jeu vise avec nos rayons (engine/aim les demande à AimRay au moment où il en
+    // a besoin). Pour chaque main dont le rayon a servi, le casque dessine le repère.
+    int aimSource = 0; // 0 le jeu vise seul, 1 regard, 2 manette gauche, 3 manette droite
+    if (g_aimReady) {
+        g_aimAllowed = headed && g_pos;
+        aim::SetActive(g_aimAllowed);
+        bool shown = false;
+        if (g_aimAllowed) {
+            const int hand = controls::AimHand();
+            float aimQuat[4], aimOffset[3];
+            aimSource = s.handAim && xr::GetAimRay(hand, aimQuat, aimOffset) ? 2 + hand : 1;
+        }
+        const bool armed = g_aimAllowed && s.handAim && (s.laser == 1 || s.laser == 2) && player::HoldingWeapon();
+        for (int hand = 0; hand < 2; ++hand) {
+            aim::Sight sight;
+            const bool visible = armed && aim::GetSight(hand, &sight);
+            xr::SetSight(hand, visible, visible ? sight.distance / s.worldScale : 0.0f, visible && sight.hit);
+            shown |= visible;
+        }
+        g_laserShown = shown;
+    }
+    // (la main qui vise change à chaque gâchette : le log ne retient que la nature du rayon)
+    const int aimKind = aimSource >= 2 ? 2 : aimSource;
+    if (aimKind != g_lastAimSource && state == kPlaying) {
+        static const char* const kSources[] = {"camera du jeu", "regard (manette qui vise non suivie)", "manettes"};
+        LOG_ENGINE("visee : %s", kSources[aimKind]);
+        g_lastAimSource = aimKind;
+    }
+    // Bras amenés aux manettes : à la première personne et à pied seulement (en véhicule, les
+    // mains restent sur le volant)
+    if (g_handsReady) {
+        g_handsAllowed = s.handArms && firstPerson && !g_inVehicle && tracked;
+        hands::SetFrame(g_handsAllowed, g_eyeFromRoot);
     }
     // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
     const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
@@ -692,6 +831,35 @@ void __cdecl HkUpdateCamera()
         LOG_ENGINE("  position (%.1f, %.1f, %.1f), avant du jeu (%.2f, %.2f, %.2f), haut (%.2f, %.2f, %.2f)",
                    g_pos ? g_pos[0] : 0.0f, g_pos ? g_pos[1] : 0.0f, g_pos ? g_pos[2] : 0.0f, game[6], game[7], game[8],
                    game[3], game[4], game[5]);
+        if (g_aimReady) {
+            aim::Stats stats;
+            aim::TakeStats(&stats);
+            LOG_ENGINE("  visee : %u points vises avec nos rayons%s", stats.points,
+                       player::DualWielding() ? " ; une arme dans chaque main" : "");
+            if (stats.calls[0] + stats.calls[1])
+                LOG_ENGINE("    tir : main gauche %u images de tir, %u avec son rayon, %u balles ; main droite %u, %u, %u",
+                           stats.calls[0], stats.scoped[0], stats.bullets[0], stats.calls[1], stats.scoped[1],
+                           stats.bullets[1]);
+            static const char* const kRays[] = {"regard", "main gauche", "main droite"};
+            for (int hand = -1; hand < 2; ++hand) {
+                aim::Sight sight;
+                if (aim::GetSight(hand, &sight))
+                    LOG_ENGINE("    %s : point vise (%.1f, %.1f, %.1f) a %.1f m%s, depart (%.1f, %.1f, %.1f), direction "
+                               "(%.2f, %.2f, %.2f)",
+                               kRays[hand + 1], sight.point[0], sight.point[1], sight.point[2], sight.distance,
+                               sight.hit ? "" : " (bout de la portee)", sight.origin[0], sight.origin[1],
+                               sight.origin[2], sight.forward[0], sight.forward[1], sight.forward[2]);
+            }
+        }
+        if (g_handsReady) {
+            unsigned posed[2];
+            float worst = 0.0f;
+            hands::TakeStats(posed, &worst);
+            if (posed[0] + posed[1])
+                LOG_ENGINE("  mains : bras gauche pose sur %u images, bras droit sur %u, plus grand ecart poignet - cible "
+                           "%.3f m",
+                           posed[0], posed[1], worst);
+        }
         if (firstPerson)
             LOG_ENGINE("  premiere personne : tete a %.2f m au-dessus de la racine, camera du jeu a %.2f m des yeux",
                        g_headHeight,
@@ -713,6 +881,57 @@ void __cdecl HkUpdateCamera()
 }
 
 // --- Rendu : caméra de l'image ----------------------------------------------------------
+
+// Repère de visée de l'image en préparation : le point visé et le départ du rayon, vus par la
+// caméra de rendu (position et orientation déjà posées pour cet œil). false : rien à dessiner.
+bool ProjectSight(const Settings& s, render::SightOverlay* overlay)
+{
+    // Ancien mode (laser=3) : un seul repère, celui de la main qui vise, à défaut du regard
+    aim::Sight sight;
+    const bool fromHand = aim::GetSight(controls::AimHand(), &sight);
+    if ((!fromHand && !aim::GetSight(-1, &sight)) || !player::HoldingWeapon())
+        return false;
+    constexpr float kNear = 0.05f;
+    const auto toCamera = [](const float world[3], float camera[3]) {
+        const float d[3] = {world[0] - g_renderPos[0], world[1] - g_renderPos[1], world[2] - g_renderPos[2]};
+        for (int axis = 0; axis < 3; ++axis)
+            camera[axis] = d[0] * g_renderOrient[axis * 3] + d[1] * g_renderOrient[axis * 3 + 1] +
+                           d[2] * g_renderOrient[axis * 3 + 2];
+    };
+    float point[3];
+    toCamera(sight.point, point);
+    if (point[2] > kNear) {
+        overlay->dot = true;
+        overlay->dotT[0] = point[0] / point[2];
+        overlay->dotT[1] = point[1] / point[2];
+    }
+    if (fromHand) {
+        // Le trait part un peu devant la manette, pas du poignet
+        constexpr float kStart = 0.12f;
+        float start[3], from[3];
+        for (int k = 0; k < 3; ++k)
+            start[k] = sight.origin[k] + kStart * s.worldScale * sight.forward[k];
+        toCamera(start, from);
+        float to[3]{point[0], point[1], point[2]};
+        // Segment coupé au plan proche de la caméra
+        if (from[2] > kNear || to[2] > kNear) {
+            if (from[2] <= kNear || to[2] <= kNear) {
+                float* behind = from[2] <= kNear ? from : to;
+                const float* front = from[2] <= kNear ? to : from;
+                const float t = (kNear - behind[2]) / (front[2] - behind[2]);
+                for (int k = 0; k < 3; ++k)
+                    behind[k] += (front[k] - behind[k]) * t;
+                behind[2] = kNear;
+            }
+            overlay->beam = true;
+            overlay->beamA[0] = from[0] / from[2];
+            overlay->beamA[1] = from[1] / from[2];
+            overlay->beamB[0] = to[0] / to[2];
+            overlay->beamB[1] = to[1] / to[2];
+        }
+    }
+    return overlay->dot || overlay->beam;
+}
 
 // Appelé juste après la copie de la caméra finale dans la caméra de rendu. fov : champ de vue
 // horizontal que le rendu va utiliser (modifiable).
@@ -775,13 +994,18 @@ void OnRenderCamera(double* fov)
         }
     }
 
+    bool sightDrawn = false;
     if (tracked) {
         view.valid = true;
         memcpy(view.quat, quat, sizeof(view.quat));
         view.eye = eye;
         view.pair = g_pair.active && s.stereo ? g_pair.id : 0;
         view.fov = static_cast<float>(*fov);
+        if (s.laser == 3 && g_aimReady)
+            sightDrawn = ProjectSight(s, &view.sight);
     }
+    // Le réticule du jeu est caché tant qu'un repère du mod est dessiné
+    g_sightDrawn = sightDrawn || g_laserShown;
     PushView(view);
 }
 
@@ -970,6 +1194,9 @@ bool InstallCameraHook()
         else
             LOG_ENGINE("table des objets introuvable dans UpdateCamera : vehicules non reconnus");
         g_hudReady = hud::Install();
+        g_handsReady = hands::Install(&HandFrame);
+        g_aimReady = aim::Install(g_pos, g_orient, &AimRay);
+        controls::Install();
         LOG_ENGINE("mode de camera du jeu : %s", g_cameraMode ? "trouve" : "introuvable (premiere personne dans tous les modes)");
     }
 
@@ -994,6 +1221,10 @@ void RemoveCameraHook()
         }
     }
     g_updateCameraTarget = g_getFovTarget = g_renderFrameTarget = nullptr;
+    hands::Remove();
+    aim::Remove();
+    controls::Remove();
+    g_aimReady = false;
     if (g_applied && g_orient)
         memcpy(g_orient, g_gameOrient, sizeof(g_gameOrient));
     g_applied = false;
@@ -1002,7 +1233,7 @@ void RemoveCameraHook()
     g_posApplied = false;
 }
 
-bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair)
+bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair, render::SightOverlay* sight)
 {
     PendingView view;
     {
@@ -1026,6 +1257,7 @@ bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair)
     *eye = view.eye;
     *hfovDeg = view.fov;
     *pair = view.pair;
+    *sight = view.sight;
     return true;
 }
 

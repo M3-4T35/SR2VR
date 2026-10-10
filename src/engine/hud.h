@@ -21,4 +21,10 @@ bool Install();
 // 1280 x 720. Sans effet si l'interface n'est pas chargée.
 void Place(float scale, float x, float y);
 
+// Montre ou cache le réticule du jeu (le groupe « reticules » du document, dont le script de
+// l'interface garde la poignée dans Hud_reticules.elements.reticule_h). Caché quand le mod
+// dessine son propre repère de visée : celui du jeu reste au centre de l'interface, alors que
+// le tir suit la manette.
+void ShowReticle(bool visible);
+
 } // namespace engine::hud

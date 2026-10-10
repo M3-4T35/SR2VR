@@ -32,6 +32,12 @@ constexpr size_t kRootOrient = 0x20;  // 9 floats
 constexpr size_t kCharacter = 0x5E0;  // pointeur ; son premier champ est le numéro du personnage
 constexpr size_t kHeadTag = 0xCBE;    // short : indice du repère « head », -1 s'il manque
 constexpr size_t kVehicle = 0xD74;    // numéro de l'objet véhicule, 0 à pied
+constexpr size_t kHeldObject = 0x10CC; // objet tenu en main (arme), nul les mains vides
+constexpr size_t kHeldSlot = 0xC4;     // dans l'objet tenu : sa case d'inventaire
+constexpr size_t kSlotInfo = 8;        // dans la case : description de l'arme
+constexpr size_t kSlotFlags2 = 0xD;    // dans la case : bit 0 = arme tenue en double
+constexpr size_t kInfoClass = 0x34;    // dans la description : classe de l'arme
+constexpr size_t kInfoRange = 0xE0;    // dans la description : portée (float, mètres)
 constexpr size_t kObjectNumber = 0x44; // dans tout objet : son numéro
 constexpr size_t kObjectType = 0x4C;   // dans tout objet : son type (5 = véhicule)
 
@@ -179,6 +185,11 @@ bool Install()
     return true;
 }
 
+bool IsLocal(const void* p)
+{
+    return g_player && p && reinterpret_cast<uintptr_t>(p) == *g_player;
+}
+
 void SetObjectTable(const void* table)
 {
     g_objects = reinterpret_cast<uintptr_t>(table);
@@ -205,6 +216,96 @@ bool InVehicle()
         return false;
     }
 #endif
+}
+
+namespace {
+
+// Case d'inventaire de l'arme en main, nullptr les mains vides
+const uint8_t* HeldSlot()
+{
+    if (!g_player)
+        return nullptr;
+#if defined(_MSC_VER) && !defined(__clang__)
+    __try {
+#endif
+        const uintptr_t player = *g_player;
+        if (!player)
+            return nullptr;
+        const uintptr_t held = *reinterpret_cast<const uintptr_t*>(player + kHeldObject);
+        if (!held)
+            return nullptr;
+        const uintptr_t slot = *reinterpret_cast<const uintptr_t*>(held + kHeldSlot);
+        if (!slot || !*reinterpret_cast<const uintptr_t*>(slot + kSlotInfo))
+            return nullptr;
+        return reinterpret_cast<const uint8_t*>(slot);
+#if defined(_MSC_VER) && !defined(__clang__)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return nullptr;
+    }
+#endif
+}
+
+} // namespace
+
+bool HoldingWeapon()
+{
+    return HeldSlot() != nullptr;
+}
+
+bool DualWielding()
+{
+    const uint8_t* slot = HeldSlot();
+#if defined(_MSC_VER) && !defined(__clang__)
+    __try {
+#endif
+        return slot && (slot[kSlotFlags2] & 1) != 0;
+#if defined(_MSC_VER) && !defined(__clang__)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#endif
+}
+
+bool WeaponInfo(int* weaponClass, float* range)
+{
+    const uint8_t* slot = HeldSlot();
+    if (!slot)
+        return false;
+#if defined(_MSC_VER) && !defined(__clang__)
+    __try {
+#endif
+        const uint8_t* info = *reinterpret_cast<const uint8_t* const*>(slot + kSlotInfo);
+        *weaponClass = *reinterpret_cast<const int*>(info + kInfoClass);
+        *range = *reinterpret_cast<const float*>(info + kInfoRange);
+        return true;
+#if defined(_MSC_VER) && !defined(__clang__)
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        return false;
+    }
+#endif
+}
+
+void* HeldWeaponSlot()
+{
+    return const_cast<uint8_t*>(HeldSlot());
+}
+
+void* Local()
+{
+    return g_player ? reinterpret_cast<void*>(*g_player) : nullptr;
+}
+
+void* Instance()
+{
+    if (!g_player || !g_instances || !*g_player)
+        return nullptr;
+    const uintptr_t character = *reinterpret_cast<const uintptr_t*>(*g_player + kCharacter);
+    if (!character)
+        return nullptr;
+    const int number = *reinterpret_cast<const int*>(character);
+    if (number < 0)
+        return nullptr;
+    return reinterpret_cast<void*>(g_instances + static_cast<uintptr_t>(number % kInstanceCount) * kInstanceSize);
 }
 
 bool HeadPosition(float head[3], float root[3], float orient[9])

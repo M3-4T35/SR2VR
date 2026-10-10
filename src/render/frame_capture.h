@@ -6,6 +6,8 @@
 // (GetRenderTargetData) dans le hook du Present, puis envoyé à D3D11 par le thread XR.
 // Coûteux (le GPU doit finir l'image avant la lecture) : suffisant pour l'écran virtuel, à
 // remplacer avant la stéréo.
+#include "render/sight_overlay.h"
+
 #include <windows.h>
 
 #include <cstdint>
@@ -26,6 +28,7 @@ struct FrameView {
     unsigned pair = 0;
     float headQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
     float hfovDeg = 0.0f;
+    SightOverlay sight; // repère de visée à dessiner dans cette image
 };
 
 // Image BGRA 8 bits, lignes contiguës (pitch = largeur * 4)

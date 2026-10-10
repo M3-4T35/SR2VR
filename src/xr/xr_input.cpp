@@ -1,4 +1,5 @@
 #include "xr/xr_input.h"
+#include "input/actions.h"
 #include "input/keys.h"
 #include "input/vpad.h"
 #include "util/config.h"
@@ -33,13 +34,33 @@ constexpr int kScanJump = 0x39, kScanCrouch = 0x2E;
 
 std::atomic<ULONGLONG> g_gameplayTick{0};
 
-// Pose de visée de la manette droite, publiée par le thread XR
+// Pose de visée de chaque manette (0 gauche, 1 droite), publiée par le thread XR : orientation
+// dans l'espace LOCAL et position par rapport à la tête
 std::mutex g_aimMutex;
-float g_aimQuat[4]{0.0f, 0.0f, 0.0f, 1.0f};
-ULONGLONG g_aimTick = 0;
+float g_aimQuat[2][4]{{0.0f, 0.0f, 0.0f, 1.0f}, {0.0f, 0.0f, 0.0f, 1.0f}};
+float g_aimOffset[2][3]{};
+ULONGLONG g_aimTick[2]{};
 constexpr ULONGLONG kAimMaxAgeMs = 300;
 
 std::atomic<unsigned> g_viewCycleRequests{0};
+
+// Position des manettes par rapport à la tête, publiée par le thread XR
+std::mutex g_handMutex;
+float g_handOffset[2][3]{};
+ULONGLONG g_handTick[2]{};
+
+void PublishHand(int hand, const XrVector3f* position, const XrPosef* head)
+{
+    std::lock_guard lock(g_handMutex);
+    if (position && head) {
+        g_handOffset[hand][0] = position->x - head->position.x;
+        g_handOffset[hand][1] = position->y - head->position.y;
+        g_handOffset[hand][2] = position->z - head->position.z;
+        g_handTick[hand] = GetTickCount64();
+    } else {
+        g_handTick[hand] = 0;
+    }
+}
 
 // Roue des armes : une arme est désignée au-delà de 0,6 ; stick revenu sous 0,25, elle est prise
 constexpr float kWheelPoint = 0.6f;
@@ -47,17 +68,20 @@ constexpr float kWheelRelease = 0.25f;
 // Après le relâchement du bouton, le stick reste pointé le temps que le jeu prenne l'arme
 constexpr ULONGLONG kWheelSettleMs = 200;
 
-void PublishAim(const XrQuaternionf* orientation)
+void PublishAim(int hand, const XrPosef* pose, const XrPosef* head)
 {
     std::lock_guard lock(g_aimMutex);
-    if (orientation) {
-        g_aimQuat[0] = orientation->x;
-        g_aimQuat[1] = orientation->y;
-        g_aimQuat[2] = orientation->z;
-        g_aimQuat[3] = orientation->w;
-        g_aimTick = GetTickCount64();
+    if (pose && head) {
+        g_aimQuat[hand][0] = pose->orientation.x;
+        g_aimQuat[hand][1] = pose->orientation.y;
+        g_aimQuat[hand][2] = pose->orientation.z;
+        g_aimQuat[hand][3] = pose->orientation.w;
+        g_aimOffset[hand][0] = pose->position.x - head->position.x;
+        g_aimOffset[hand][1] = pose->position.y - head->position.y;
+        g_aimOffset[hand][2] = pose->position.z - head->position.z;
+        g_aimTick[hand] = GetTickCount64();
     } else {
-        g_aimTick = 0;
+        g_aimTick[hand] = 0;
     }
 }
 
@@ -80,6 +104,10 @@ enum {
     kAimPose,
     kLeftClick,
     kRightClick,
+    kLeftGrip,
+    kReload,
+    kLeftGripPose,
+    kRightGripPose,
     kActionCount
 };
 
@@ -107,7 +135,9 @@ const Profile kProfiles[] = {
       {kRightGrip, "/user/hand/right/input/squeeze/value"},
       {kAimPose, "/user/hand/right/input/aim/pose"},
       {kLeftClick, "/user/hand/left/input/thumbstick/click"},
-      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"},
+      {kLeftGrip, "/user/hand/left/input/squeeze/value"},
+      {kReload, "/user/hand/left/input/x/click"}}},
     {"/interaction_profiles/valve/index_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
       {kRightStick, "/user/hand/right/input/thumbstick"},
@@ -119,7 +149,9 @@ const Profile kProfiles[] = {
       {kRightGrip, "/user/hand/right/input/squeeze/value"},
       {kAimPose, "/user/hand/right/input/aim/pose"},
       {kLeftClick, "/user/hand/left/input/thumbstick/click"},
-      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"},
+      {kLeftGrip, "/user/hand/left/input/squeeze/value"},
+      {kReload, "/user/hand/left/input/a/click"}}},
     {"/interaction_profiles/microsoft/motion_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
       {kRightStick, "/user/hand/right/input/thumbstick"},
@@ -131,7 +163,8 @@ const Profile kProfiles[] = {
       {kRightGrip, "/user/hand/right/input/squeeze/click"},
       {kAimPose, "/user/hand/right/input/aim/pose"},
       {kLeftClick, "/user/hand/left/input/thumbstick/click"},
-      {kRightClick, "/user/hand/right/input/thumbstick/click"}}},
+      {kRightClick, "/user/hand/right/input/thumbstick/click"},
+      {kLeftGrip, "/user/hand/left/input/squeeze/click"}}},
     {"/interaction_profiles/htc/vive_controller",
      {{kLeftStick, "/user/hand/left/input/trackpad"},
       {kRightStick, "/user/hand/right/input/trackpad"},
@@ -141,7 +174,8 @@ const Profile kProfiles[] = {
       {kLeftTrigger, "/user/hand/left/input/trigger/value"},
       {kRightTrigger, "/user/hand/right/input/trigger/value"},
       {kRightGrip, "/user/hand/right/input/squeeze/click"},
-      {kAimPose, "/user/hand/right/input/aim/pose"}}},
+      {kAimPose, "/user/hand/right/input/aim/pose"},
+      {kLeftGrip, "/user/hand/left/input/squeeze/click"}}},
     {"/interaction_profiles/khr/simple_controller",
      {{kConfirm, "/user/hand/left/input/select/click"},
       {kConfirm, "/user/hand/right/input/select/click"},
@@ -167,17 +201,31 @@ void NoteGameplayFrame()
     g_gameplayTick = now ? now : 1;
 }
 
+bool GetHandOffset(int hand, float offset[3])
+{
+    if (hand < 0 || hand > 1)
+        return false;
+    std::lock_guard lock(g_handMutex);
+    if (!g_handTick[hand] || GetTickCount64() - g_handTick[hand] > kAimMaxAgeMs)
+        return false;
+    memcpy(offset, g_handOffset[hand], sizeof(g_handOffset[hand]));
+    return true;
+}
+
 unsigned TakeViewCycleRequests()
 {
     return g_viewCycleRequests.exchange(0);
 }
 
-bool GetAimPose(float quat[4])
+bool GetAimRay(int hand, float quat[4], float offset[3])
 {
-    std::lock_guard lock(g_aimMutex);
-    if (!g_aimTick || GetTickCount64() - g_aimTick > kAimMaxAgeMs)
+    if (hand < 0 || hand > 1)
         return false;
-    memcpy(quat, g_aimQuat, sizeof(g_aimQuat));
+    std::lock_guard lock(g_aimMutex);
+    if (!g_aimTick[hand] || GetTickCount64() - g_aimTick[hand] > kAimMaxAgeMs)
+        return false;
+    memcpy(quat, g_aimQuat[hand], sizeof(g_aimQuat[hand]));
+    memcpy(offset, g_aimOffset[hand], sizeof(g_aimOffset[hand]));
     return true;
 }
 
@@ -203,6 +251,9 @@ void MenuInput::ReadConfig()
     if (wheelButton_ < 0 || wheelButton_ >= input::vpad::kButtonCount)
         wheelButton_ = input::vpad::kEast;
     wheelToggle_ = config::Int("Controls", "wheel_toggle", 1) != 0;
+    fireMode_ = config::Int("Controls", "fire_mode", 0);
+    if (fireMode_ < 0 || fireMode_ > 2)
+        fireMode_ = 0;
 }
 
 bool MenuInput::Init(XrInstance instance, XrSession session)
@@ -236,18 +287,28 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_grip", "Interagir (E)", &rightGrip_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Viser (main droite)", &aimPose_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_click", "Changer de vue", &leftClick_) ||
-        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_click", "Roue des armes", &rightClick_)) {
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_click", "Roue des armes", &rightClick_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_grip", "Courir", &leftGrip_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "reload", "Recharger", &reload_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_aim_pose", "Viser (main gauche)", &leftAimPose_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_grip_pose", "Main gauche", &gripPose_[0]) ||
+        !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "right_grip_pose", "Main droite", &gripPose_[1])) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
         return false;
     }
 
     const XrAction actions[kActionCount] = {leftStick_, rightStick_, confirm_, back_, leftTrigger_, rightTrigger_,
-                                            rightGrip_, aimPose_, leftClick_, rightClick_};
+                                            rightGrip_, aimPose_, leftClick_, rightClick_, leftGrip_, reload_,
+                                            gripPose_[0], gripPose_[1]};
     int accepted = 0;
     for (const Profile& profile : kProfiles) {
         std::vector<XrActionSuggestedBinding> suggested;
         for (const Binding& b : profile.bindings)
             suggested.push_back({actions[b.action], ToPath(instance, b.path)});
+        // Poses de prise des deux mains et pose de visée de la gauche : tous les profils les ont
+        suggested.push_back({leftAimPose_, ToPath(instance, "/user/hand/left/input/aim/pose")});
+        suggested.push_back({gripPose_[0], ToPath(instance, "/user/hand/left/input/grip/pose")});
+        suggested.push_back({gripPose_[1], ToPath(instance, "/user/hand/right/input/grip/pose")});
         XrInteractionProfileSuggestedBinding sb{XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING};
         sb.interactionProfile = ToPath(instance, profile.name);
         sb.countSuggestedBindings = static_cast<uint32_t>(suggested.size());
@@ -266,19 +327,30 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         LOG_XR("ERREUR : xrAttachSessionActionSets, manettes desactivees");
         return false;
     }
-    // Espace de la pose de visée : sert à situer la manette droite à chaque image
+    // Espaces des poses de visée : situent le rayon de chaque manette à chaque image
     XrActionSpaceCreateInfo sci{XR_TYPE_ACTION_SPACE_CREATE_INFO};
-    sci.action = aimPose_;
     sci.poseInActionSpace.orientation.w = 1.0f;
-    if (XR_FAILED(xrCreateActionSpace(session, &sci, &aimSpace_))) {
-        aimSpace_ = XR_NULL_HANDLE;
-        LOG_XR("manettes : espace de visee non cree, pas de visee a la main");
+    for (int hand = 0; hand < 2; ++hand) {
+        sci.action = hand ? aimPose_ : leftAimPose_;
+        if (XR_FAILED(xrCreateActionSpace(session, &sci, &aimSpace_[hand]))) {
+            aimSpace_[hand] = XR_NULL_HANDLE;
+            LOG_XR("manettes : espace de visee de la main %s non cree, pas de visee avec cette main",
+                   hand ? "droite" : "gauche");
+        }
+    }
+    for (int hand = 0; hand < 2; ++hand) {
+        sci.action = gripPose_[hand];
+        if (XR_FAILED(xrCreateActionSpace(session, &sci, &gripSpace_[hand]))) {
+            gripSpace_[hand] = XR_NULL_HANDLE;
+            LOG_XR("manettes : espace de la main %s non cree", hand ? "droite" : "gauche");
+        }
     }
     ready_ = true;
     LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%.0f px/s), "
-           "haut = sauter (position 0x%02X), bas = s'accroupir (position 0x%02X), poignee droite = E. Menus : sticks = "
-           "fleches. A = Entree, B ou menu gauche = Echap, gachettes = Ctrl / Maj",
-           accepted, turnSpeed_, jump_.code, crouch_.code);
+           "haut = sauter (position 0x%02X), bas = s'accroupir (position 0x%02X), poignee droite = E, gachette droite "
+           "= tir, gachette gauche = attaque secondaire (tir avec deux armes), poignee gauche = courir, X = recharger "
+           "(tir : fire_mode=%d). Menus : sticks = fleches, gachettes = Ctrl / Maj. A = Entree, B ou menu gauche = Echap",
+           accepted, turnSpeed_, jump_.code, crouch_.code, fireMode_);
     return true;
 }
 
@@ -306,6 +378,15 @@ void MenuInput::SetKey(Key& key, bool pressed, bool repeat)
     }
 }
 
+void MenuInput::SetMouseButton(int button, bool pressed)
+{
+    if (pressed == mouseHeld_[button])
+        return;
+    // Un relâchement part toujours ; un appui seulement si le jeu est au premier plan
+    if (input::SendMouseButton(button, pressed) || !pressed)
+        mouseHeld_[button] = pressed;
+}
+
 void MenuInput::ReleaseAll()
 {
     for (Key& key : arrows_)
@@ -321,7 +402,14 @@ void MenuInput::ReleaseAll()
     SetKey(crouch_, false, false);
     direction_ = -1;
     turnRemainder_ = 0.0f;
-    PublishAim(nullptr);
+    input::actions::ReleaseAll();
+    SetMouseButton(0, false);
+    SetMouseButton(1, false);
+    PublishAim(0, nullptr, nullptr);
+    PublishAim(1, nullptr, nullptr);
+    aimPoseValid_[0] = aimPoseValid_[1] = false;
+    PublishHand(0, nullptr, nullptr);
+    PublishHand(1, nullptr, nullptr);
     wheelOpen_ = false;
     wheelCloseTick_ = 0;
     input::vpad::Reset();
@@ -387,7 +475,7 @@ void MenuInput::UpdateWheel(bool gameplay, bool click, float rx, float ry, ULONG
     }
 }
 
-void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime time)
+void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime time, const XrPosef* head)
 {
     LARGE_INTEGER counter, frequency;
     QueryPerformanceCounter(&counter);
@@ -423,14 +511,29 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         return;
     }
 
-    // Manette droite : où elle pointe, à l'instant d'affichage
-    XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION};
-    const XrSpaceLocationFlags aimFlags =
-        XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT;
-    const bool aimed = aimSpace_ != XR_NULL_HANDLE && base != XR_NULL_HANDLE &&
-                       XR_SUCCEEDED(xrLocateSpace(aimSpace_, base, time, &aim)) &&
-                       (aim.locationFlags & aimFlags) == aimFlags;
-    PublishAim(aimed ? &aim.pose.orientation : nullptr);
+    // Les deux mains : d'où part leur rayon de visée et où il pointe, à l'instant d'affichage ;
+    // position de la prise, rapportée à la tête
+    for (int hand = 0; hand < 2; ++hand) {
+        XrSpaceLocation aim{XR_TYPE_SPACE_LOCATION};
+        const XrSpaceLocationFlags aimFlags =
+            XR_SPACE_LOCATION_ORIENTATION_VALID_BIT | XR_SPACE_LOCATION_ORIENTATION_TRACKED_BIT |
+            XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+        const bool aimed = head && aimSpace_[hand] != XR_NULL_HANDLE && base != XR_NULL_HANDLE &&
+                           XR_SUCCEEDED(xrLocateSpace(aimSpace_[hand], base, time, &aim)) &&
+                           (aim.locationFlags & aimFlags) == aimFlags;
+        PublishAim(hand, aimed ? &aim.pose : nullptr, head);
+        aimPoseValid_[hand] = aimed;
+        if (aimed)
+            aimPoseLocal_[hand] = aim.pose;
+
+        XrSpaceLocation grip{XR_TYPE_SPACE_LOCATION};
+        const XrSpaceLocationFlags gripFlags =
+            XR_SPACE_LOCATION_POSITION_VALID_BIT | XR_SPACE_LOCATION_POSITION_TRACKED_BIT;
+        const bool held = head && gripSpace_[hand] != XR_NULL_HANDLE && base != XR_NULL_HANDLE &&
+                          XR_SUCCEEDED(xrLocateSpace(gripSpace_[hand], base, time, &grip)) &&
+                          (grip.locationFlags & gripFlags) == gripFlags;
+        PublishHand(hand, held ? &grip.pose.position : nullptr, head);
+    }
 
     XrActionStateGetInfo gi{XR_TYPE_ACTION_STATE_GET_INFO};
     const auto pressed = [&](XrAction action) {
@@ -448,10 +551,6 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         }
     };
 
-    // Modificateurs d'abord : ils doivent être enfoncés avant la touche qu'ils accompagnent
-    SetKey(control_, pressed(leftTrigger_), false);
-    SetKey(shift_, pressed(rightTrigger_), false);
-
     float lx, ly, rx, ry;
     stick(leftStick_, &lx, &ly);
     stick(rightStick_, &rx, &ry);
@@ -459,8 +558,42 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
     const ULONGLONG gameplayTick = g_gameplayTick;
     const bool gameplay = gameplayTick && now >= gameplayTick && now - gameplayTick < kGameplayTimeoutMs;
     if (static_cast<int>(gameplay) != gameplayShown_) {
-        LOG_XR("manettes : mode %s", gameplay ? "partie (deplacement, tourner, interagir)" : "menus (fleches)");
+        LOG_XR("manettes : mode %s", gameplay ? "partie (deplacement, tourner, tir, interagir)" : "menus (fleches)");
         gameplayShown_ = gameplay;
+    }
+
+    // Gâchettes. Dans les menus : Ctrl et Maj (onglets) ; ces modificateurs passent avant les
+    // flèches qu'ils accompagnent. En partie : la droite tire, la gauche fait l'attaque
+    // secondaire, ou tire elle aussi quand le personnage tient une arme dans chaque main. Le tir
+    // est posé directement dans les commandes du jeu par le moteur ([Controls] fire_mode=0) ;
+    // à défaut, boutons de la souris (1) ou gâchettes de la manette virtuelle (2). Maj (courir)
+    // est sur la poignée gauche.
+    namespace actions = input::actions;
+    const bool leftTrigger = pressed(leftTrigger_), rightTrigger = pressed(rightTrigger_);
+    const bool fireLeft = gameplay && leftTrigger && !wheelOpen_;
+    const bool fireRight = gameplay && rightTrigger && !wheelOpen_;
+    int fireMode = fireMode_;
+    if (fireMode == 0 && !actions::Direct())
+        fireMode = input::vpad::Ready() ? 2 : 1;
+    if (fireMode == 2 && !input::vpad::Ready())
+        fireMode = 1;
+    const bool dual = actions::DualWield();
+    const bool primary = fireRight || (fireLeft && dual), secondary = fireLeft && !dual;
+    actions::Set(actions::kTriggerLeft, fireMode == 0 && fireLeft);
+    actions::Set(actions::kTriggerRight, fireMode == 0 && fireRight);
+    SetMouseButton(0, fireMode == 1 && primary);
+    SetMouseButton(1, fireMode == 1 && secondary);
+    input::vpad::SetAxis(input::vpad::kRightTrigger, fireMode == 2 && primary ? 1.0f : 0.0f);
+    input::vpad::SetAxis(input::vpad::kLeftTrigger, fireMode == 2 && secondary ? 1.0f : 0.0f);
+    SetKey(control_, !gameplay && leftTrigger, false);
+    SetKey(shift_, gameplay ? pressed(leftGrip_) : rightTrigger, false);
+    const bool reload = gameplay && pressed(reload_);
+    actions::Set(actions::kReload, fireMode == 0 && reload);
+    input::vpad::SetButton(input::vpad::kWest, fireMode != 0 && reload);
+    if ((fireLeft || fireRight) && !firedLogged_) {
+        static const char* const kModes[] = {"commande posee dans le jeu", "bouton de souris", "manette virtuelle"};
+        LOG_XR("manettes : premier tir a la gachette %s (%s)", fireRight ? "droite" : "gauche", kModes[fireMode]);
+        firedLogged_ = true;
     }
 
     // Clic du stick gauche : vue suivante (en partie seulement)

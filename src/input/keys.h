@@ -22,6 +22,10 @@ bool SendScan(WORD scanCode, bool down);
 // Déplacement relatif de la souris, en pixels. false si le jeu n'est pas au premier plan.
 bool MoveMouse(int dx, int dy);
 
+// Appui ou relâchement d'un bouton de la souris (0 gauche, 1 droit). false si l'appui n'a pas
+// été envoyé parce que le jeu n'est pas au premier plan.
+bool SendMouseButton(int button, bool down);
+
 // Nombre d'appuis envoyés depuis le dernier appel
 unsigned TakeSentCount();
 

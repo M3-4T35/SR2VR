@@ -205,7 +205,7 @@ void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
     // Le back buffer contient encore l'image finie : copie pour le casque si demandée, avec
     // la vue (orientation de tête, champ de vue) qui a servi à la rendre
     FrameView view;
-    view.valid = engine::TakeFrameView(view.headQuat, &view.eye, &view.hfovDeg, &view.pair);
+    view.valid = engine::TakeFrameView(view.headQuat, &view.eye, &view.hfovDeg, &view.pair, &view.sight);
     CaptureFrame(device, view);
 
     const unsigned long long n = ++g_frames;

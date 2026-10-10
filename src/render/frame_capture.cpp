@@ -185,6 +185,8 @@ void CaptureFrame(IDirect3DDevice9* device, const FrameView& view)
             memcpy(g_work.pixels.data() + y * rowBytes, src + static_cast<size_t>(y) * locked.Pitch, rowBytes);
     }
     g_readback->UnlockRect();
+    if (view.valid)
+        DrawSight(g_work.pixels.data(), desc.Width, desc.Height, view.hfovDeg, view.sight);
 
     const double luma = view.valid ? SampleLuma(g_work) : 0.0;
     const double elapsed = NowMs() - start;

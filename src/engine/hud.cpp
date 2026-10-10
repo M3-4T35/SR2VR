@@ -112,4 +112,17 @@ void Place(float scale, float x, float y)
         LOG_ENGINE("interface : etat Lua absent ou execution en echec, l'interface n'est pas deplacee pour l'instant");
 }
 
+void ShowReticle(bool visible)
+{
+    if (!g_luaExecute)
+        return;
+    char code[320];
+    snprintf(code, sizeof(code),
+             "local t = Hud_reticules "
+             "local h = t and t.elements and t.elements.reticule_h "
+             "if h and h ~= 0 and h ~= -1 then vint_set_property(h, \"visible\", %s) end",
+             visible ? "true" : "false");
+    Execute(code);
+}
+
 } // namespace engine::hud

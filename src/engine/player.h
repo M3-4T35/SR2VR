@@ -25,8 +25,30 @@ void SetObjectTable(const void* table);
 // pas de joueur, pas de squelette prêt, ou résultat aberrant.
 bool HeadPosition(float head[3], float root[3], float orient[9]);
 
+// p est le personnage du joueur local
+bool IsLocal(const void* p);
+
 // Le joueur est dans un véhicule (même test que la fonction Lua du jeu
 // « is_local_player_in_vehicle » : numéro de véhicule du joueur en +0xD74, objet de type 5).
 bool InVehicle();
+
+// Arme en main. Le joueur garde en +0x10CC l'objet qu'il tient ; cet objet pointe en +0xC4 sur
+// sa case d'inventaire : description de l'arme en +8, drapeaux en +0xC et +0xD (bit 0 de +0xD :
+// l'arme est tenue en double, une dans chaque main), munitions en +0x10.
+bool HoldingWeapon();
+bool DualWielding();
+// Classe (description+0x34) et portée en mètres (description+0xE0) de l'arme en main. false :
+// mains vides.
+bool WeaponInfo(int* weaponClass, float* range);
+
+// Case d'inventaire de l'arme en main (description en +8, munitions du chargeur en +0x10),
+// nullptr les mains vides
+void* HeldWeaponSlot();
+
+// Le personnage du joueur local, nullptr hors partie
+void* Local();
+
+// Son personnage animé (squelette, matrices des os), nullptr s'il n'en a pas
+void* Instance();
 
 } // namespace engine::player

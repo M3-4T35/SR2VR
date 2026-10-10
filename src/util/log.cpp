@@ -41,10 +41,16 @@ void Write(const char* tag, const char* fmt, ...)
     SYSTEMTIME t;
     GetLocalTime(&t);
     std::lock_guard lock(g_mutex);
-    FILE* f = nullptr;
-    if (fopen_s(&f, g_path, "a") == 0 && f) {
-        fprintf(f, "%02u:%02u:%02u.%03u %-8s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, tag, msg);
-        fclose(f);
+    // Le fichier peut être tenu un instant par un lecteur (suivi du log pendant un essai) :
+    // quelques nouveaux essais plutôt qu'une ligne perdue
+    for (int attempt = 0; attempt < 5; ++attempt) {
+        FILE* f = nullptr;
+        if (fopen_s(&f, g_path, "a") == 0 && f) {
+            fprintf(f, "%02u:%02u:%02u.%03u %-8s %s\n", t.wHour, t.wMinute, t.wSecond, t.wMilliseconds, tag, msg);
+            fclose(f);
+            return;
+        }
+        Sleep(2);
     }
 }
 

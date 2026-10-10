@@ -8,6 +8,12 @@
 //   stick droit, gauche / droite     -> tourner (mouvement horizontal de la souris)
 //   stick droit, haut / bas          -> sauter (Espace) / s'accroupir (C)
 //   poignée droite                   -> interagir (E)
+//   gâchette droite                  -> tirer (attaque principale, posée dans les commandes du
+//                                       jeu par engine/controls)
+//   gâchette gauche                  -> attaque secondaire ; avec une arme dans chaque main,
+//                                       elle tire aussi et c'est la main gauche qui vise
+//   poignée gauche                   -> courir (Maj, tenue)
+//   X (manette gauche)               -> recharger / ramasser
 //   clic du stick droit              -> roue des armes : elle s'ouvre, le stick droit choisit
 //                                       l'arme, le relâcher la prend (manette virtuelle :
 //                                       bouton B tenu, stick droit envoyé comme stick gauche)
@@ -15,11 +21,10 @@
 //                                       en véhicule : conducteur, devant le pare-brise, jeu)
 // Dans les menus (pause, menu principal, garde-robe, garage, boutiques) :
 //   stick gauche ou droit            -> flèches, avec répétition tant qu'il est tenu
+//   gâchette gauche / droite         -> Ctrl / Maj (tenues), pour les onglets des menus
 // Partout :
 //   A                                -> Entrée
 //   B, ou bouton menu de la gauche   -> Échap
-//   gâchette gauche                  -> Ctrl (tenue)
-//   gâchette droite                  -> Maj (tenue)
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 #include <windows.h>
@@ -32,13 +37,20 @@ namespace xr {
 // arrivent, les manettes sont en mode « partie » ; sinon en mode « menus ».
 void NoteGameplayFrame();
 
-// Direction pointée par la manette droite (pose de visée OpenXR), dans le même espace LOCAL
-// que la tête : quaternion x, y, z, w, l'avant est -z. false si la manette n'est pas suivie
+// Rayon de visée d'une manette (pose « aim » d'OpenXR ; hand : 0 gauche, 1 droite). quat :
+// orientation dans le même espace LOCAL que la tête (x, y, z, w ; l'avant est -z). offset :
+// départ du rayon par rapport à la tête, en mètres, dans les axes de l'espace LOCAL (x à
+// droite, y en haut, z vers l'arrière). false si la manette ou la tête ne sont pas suivies
 // (pose de plus de 0,3 s).
-bool GetAimPose(float quat[4]);
+bool GetAimRay(int hand, float quat[4], float offset[3]);
 
 // Nombre de clics du stick gauche (changement de vue) depuis le dernier appel
 unsigned TakeViewCycleRequests();
+
+// Position d'une manette par rapport à la tête (hand : 0 gauche, 1 droite), en mètres, dans
+// les axes de l'espace LOCAL : x à droite, y en haut, z vers l'arrière. C'est la pose de
+// prise (« grip ») : le creux de la main. false si la manette ou la tête ne sont pas suivies.
+bool GetHandOffset(int hand, float offset[3]);
 
 class MenuInput {
 public:
@@ -46,10 +58,16 @@ public:
     // manettes indisponibles, le reste de la VR continue.
     bool Init(XrInstance instance, XrSession session);
     // À chaque image du thread XR. focused : la session a le focus des entrées. base, time :
-    // espace et instant d'affichage pour situer la manette droite.
-    void Update(XrSession session, bool focused, XrSpace base, XrTime time);
+    // espace et instant d'affichage pour situer les manettes. head : pose de la tête dans le
+    // même espace, nullptr si elle n'est pas suivie.
+    void Update(XrSession session, bool focused, XrSpace base, XrTime time, const XrPosef* head);
     // Relâche les touches tenues (perte de focus, arrêt)
     void ReleaseAll();
+    // Pose « aim » d'une manette relevée par le dernier Update, dans son espace `base` (hand :
+    // 0 gauche, 1 droite). nullptr si elle n'est pas suivie.
+    const XrPosef* AimPose(int hand) const { return aimPoseValid_[hand] ? &aimPoseLocal_[hand] : nullptr; }
+    // Les manettes pilotent le personnage (le jeu prépare des images hors pause)
+    bool Gameplay() const { return gameplayShown_ == 1; }
 
 private:
     struct Key {
@@ -59,6 +77,7 @@ private:
         ULONGLONG nextRepeat = 0;
     };
     void SetKey(Key& key, bool pressed, bool repeat);
+    void SetMouseButton(int button, bool pressed); // 0 gauche, 1 droit
     void ReadConfig();
 
     XrActionSet set_ = XR_NULL_HANDLE;
@@ -69,13 +88,25 @@ private:
     XrAction leftTrigger_ = XR_NULL_HANDLE;
     XrAction rightTrigger_ = XR_NULL_HANDLE;
     XrAction rightGrip_ = XR_NULL_HANDLE;
-    XrAction aimPose_ = XR_NULL_HANDLE;
+    XrAction aimPose_ = XR_NULL_HANDLE;     // main droite
+    XrAction leftAimPose_ = XR_NULL_HANDLE;
     XrAction leftClick_ = XR_NULL_HANDLE;
     XrAction rightClick_ = XR_NULL_HANDLE;
-    XrSpace aimSpace_ = XR_NULL_HANDLE;
+    XrAction leftGrip_ = XR_NULL_HANDLE;
+    XrAction reload_ = XR_NULL_HANDLE;
+    XrSpace aimSpace_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // gauche, droite
+    XrPosef aimPoseLocal_[2]{};
+    bool aimPoseValid_[2]{};
+    XrAction gripPose_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // gauche, droite
+    XrSpace gripSpace_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};
     bool ready_ = false;
     bool announced_ = false;
     int gameplayShown_ = -1; // dernier mode annoncé dans le log (0 menus, 1 partie)
+    bool firedLogged_ = false; // premier tir à la gâchette annoncé dans le log
+    // Tir : 0 commandes posées dans le jeu, 1 boutons de la souris, 2 manette virtuelle
+    // ([Controls] fire_mode)
+    int fireMode_ = 0;
+    bool mouseHeld_[2]{};
     int direction_ = -1;     // menus : 0 haut, 1 bas, 2 gauche, 3 droite, -1 neutre
     Key arrows_[4];
     Key move_[4]; // avant, arrière, gauche, droite

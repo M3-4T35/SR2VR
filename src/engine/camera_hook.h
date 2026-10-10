@@ -1,4 +1,5 @@
 #pragma once
+#include "render/sight_overlay.h"
 
 namespace engine {
 
@@ -15,6 +16,7 @@ void RemoveCameraHook();
 // virtuel) ou tête non suivie. À appeler une fois par Present, sur le thread du rendu : les
 // vues sont rendues dans l'ordre où les images ont été préparées. pair : numéro de la paire
 // en vrai relief (deux images du même instant du jeu, œil gauche puis œil droit), 0 sinon.
-bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair);
+// sight : repère de visée projeté avec la caméra de cette image.
+bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair, render::SightOverlay* sight);
 
 } // namespace engine

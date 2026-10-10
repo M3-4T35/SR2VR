@@ -118,6 +118,15 @@ bool MoveMouse(int dx, int dy)
     return SendInput(1, &in, sizeof(in)) == 1;
 }
 
+bool SendMouseButton(int button, bool down)
+{
+    INPUT in{};
+    in.type = INPUT_MOUSE;
+    in.mi.dwFlags = button == 0 ? (down ? MOUSEEVENTF_LEFTDOWN : MOUSEEVENTF_LEFTUP)
+                                : (down ? MOUSEEVENTF_RIGHTDOWN : MOUSEEVENTF_RIGHTUP);
+    return Send(in, down);
+}
+
 unsigned TakeSentCount()
 {
     return g_sent.exchange(0);

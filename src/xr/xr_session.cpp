@@ -11,6 +11,7 @@
 #include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_input.h"
+#include "xr/xr_laser.h"
 
 #include <dxgi1_2.h>
 #include <openxr/openxr_platform.h>
@@ -225,6 +226,7 @@ private:
     UINT scHeight_ = 0;
 
     MenuInput input_;        // manettes -> touches des menus
+    Laser laser_;            // repère de visée des manettes, par-dessus l'image du jeu
 
     unsigned long long framesSubmitted_ = 0;
     unsigned long long framesCopied_ = 0;
@@ -463,6 +465,7 @@ bool XrApp::CreateSession()
     }
     LOG_XR("session creee, format de swapchain %lld%s", static_cast<long long>(format_),
            format_ == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB ? " (BGRA sRGB)" : " (BGRA, couleurs possiblement fausses)");
+    laser_.Init(session_, context_, format_);
     return true;
 }
 
@@ -622,7 +625,8 @@ void XrApp::RenderFrame()
         }
     }
 
-    input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED, localSpace_, fs.predictedDisplayTime);
+    input_.Update(session_, state_ == XR_SESSION_STATE_FOCUSED, localSpace_, fs.predictedDisplayTime,
+                  headPoseValid_ ? &headPose_ : nullptr);
 
     const ULONGLONG tick = GetTickCount64();
     if (tick - lastConfig_ >= 1000) {
@@ -665,7 +669,8 @@ void XrApp::RenderFrame()
     XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerProjectionView projected[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                   {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
-    const XrCompositionLayerBaseHeader* layers[1]{};
+    XrCompositionLayerQuad sights[Laser::kMaxLayers];
+    const XrCompositionLayerBaseHeader* layers[1 + Laser::kMaxLayers]{};
     uint32_t layerCount = 0;
 
     // Affichage : 2 = relief (une image par œil, rendue avec la caméra décalée), 1 = immersif
@@ -711,6 +716,14 @@ void XrApp::RenderFrame()
         }
         shownMode_ = shown;
         ++shownCount_[shown];
+        // Repère de visée des manettes, par-dessus l'image du jeu : seulement en partie, quand
+        // l'image entoure la tête
+        if (headPoseValid_ && input_.Gameplay()) {
+            const XrPosef* const aim[2]{input_.AimPose(0), input_.AimPose(1)};
+            const uint32_t count = laser_.Build(localSpace_, headPose_, aim, sights);
+            for (uint32_t i = 0; i < count; ++i)
+                layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&sights[i]);
+        }
     } else if (fs.shouldRender && eyes_[0].hasContent) {
         // L'écran revient après une vue immersive (ou pour la première fois) : devant la tête
         if (!screenShownTick_ || nowTick - screenShownTick_ > 500)
@@ -774,6 +787,10 @@ void XrApp::RenderFrame()
             LOG_XR("  images avec vue : oeil gauche %u (luminosite moyenne %.0f sur 255), oeil droit %u (luminosite "
                    "moyenne %.0f)",
                    capture.eyeCount[0], capture.eyeLuma[0], capture.eyeCount[1], capture.eyeLuma[1]);
+        unsigned sightShown[2];
+        laser_.TakeStats(sightShown);
+        if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && sightShown[0] + sightShown[1])
+            LOG_XR("  repere de visee dessine : main gauche %u images, main droite %u", sightShown[0], sightShown[1]);
         shownCount_[0] = shownCount_[1] = shownCount_[2] = 0;
         ++statsLogged_;
         submittedAtStats_ = framesSubmitted_;
@@ -785,6 +802,7 @@ void XrApp::RenderFrame()
 void XrApp::Shutdown()
 {
     input_.ReleaseAll();
+    laser_.Destroy();
     DestroySwapchains();
     if (viewSpace_ != XR_NULL_HANDLE)
         xrDestroySpace(viewSpace_);

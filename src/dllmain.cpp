@@ -13,6 +13,7 @@
 
 #include "render/d3d9_hook.h"
 #include "util/log.h"
+#include "xr/xr_session.h"
 
 namespace {
 
@@ -218,6 +219,8 @@ DWORD WINAPI InitThread(LPVOID)
         LOG_CORE("hook du renderer indisponible : le jeu continue sans VR");
         return 0;
     }
+    xr::Start();
+
     // Le jeu présente-t-il des images par les fonctions détournées ? Vérifié une fois.
     Sleep(15000);
     if (render::PresentCount() == 0)
@@ -238,6 +241,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
     } else if (reason == DLL_PROCESS_DETACH && reserved == nullptr) {
         // FreeLibrary explicite : on retire les hooks. À la fermeture du processus
         // (reserved != nullptr) les autres threads sont déjà morts, on ne touche à rien.
+        xr::RequestStop();
         render::RemoveD3D9Hooks();
         if (g_minhookReady)
             MH_Uninitialize();

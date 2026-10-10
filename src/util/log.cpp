@@ -11,11 +11,11 @@ char g_path[MAX_PATH]{};
 std::mutex g_mutex;
 } // namespace
 
-void Init(HMODULE self)
+void Init(HMODULE self, const char* fileName)
 {
     GetModuleFileNameA(self, g_path, MAX_PATH);
     if (char* slash = strrchr(g_path, '\\'))
-        strcpy_s(slash + 1, MAX_PATH - (slash + 1 - g_path), "sr2_vr.log");
+        strcpy_s(slash + 1, MAX_PATH - (slash + 1 - g_path), fileName);
 
     SYSTEMTIME t;
     GetLocalTime(&t);

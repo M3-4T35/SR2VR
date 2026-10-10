@@ -4,10 +4,19 @@
 // 32 bits comme le jeu : l'adresse de LoadLibraryW doit être celle du kernel32 32 bits.
 //
 // Usage : sr2_vr_injector [--game-dir <dossier>] [--dll <chemin>] [--early]
+//                         [--steamvr | --runtime <json>]
 //                         [--wait] [--timeout <s>] [-- <arguments du jeu>]
-//   --early : injecte avant que le jeu ne démarre (processus suspendu).
-//             Par défaut on attend la fenêtre du jeu.
-//   --wait  : reste ouvert jusqu'à la fermeture du jeu (automatique si lancé par Steam).
+//   --early   : injecte avant que le jeu ne démarre (processus suspendu).
+//               Par défaut on attend la fenêtre du jeu.
+//   --steamvr : utilise le runtime OpenXR 32 bits de SteamVR pour ce lancement seulement
+//               (Steam Frame, Index...), sans changer le runtime par défaut de Windows.
+//   --runtime : idem avec le manifeste OpenXR 32 bits (.json) d'un autre runtime.
+//   --default-runtime : runtime OpenXR actif de Windows, quel qu'il soit.
+//               Sans ces options : runtime actif de Windows, sauf si c'est celui de Meta,
+//               dont la version 32 bits plante à la création de la session (constaté avec
+//               Oculus 1.208, même hors du jeu : tools/xr_probe). SteamVR est alors choisi
+//               s'il est installé ; il pilote aussi les casques Meta (Link).
+//   --wait    : reste ouvert jusqu'à la fermeture du jeu (automatique si lancé par Steam).
 //   Dossier du jeu : --game-dir, sinon le dossier de l'injecteur s'il contient le jeu, sinon
 //   game_dir dans la section [Launch] de sr2_vr.ini (à côté de l'injecteur), sinon les
 //   bibliothèques Steam, sinon le dossier Steam par défaut.
@@ -18,6 +27,7 @@
 #include <algorithm>
 #include <cstdarg>
 #include <cstdio>
+#include <cwctype>
 #include <iterator>
 #include <string>
 #include <vector>
@@ -26,6 +36,9 @@ namespace {
 
 constexpr wchar_t kDefaultGameDir[] = L"C:\\Program Files (x86)\\Steam\\steamapps\\common\\Saints Row 2";
 constexpr wchar_t kSteamSubDir[] = L"\\steamapps\\common\\Saints Row 2";
+// Manifeste OpenXR 32 bits de SteamVR, dans la bibliothèque Steam où il est installé
+constexpr wchar_t kSteamVrSubDir[] = L"\\steamapps\\common\\SteamVR";
+constexpr wchar_t kSteamVrRuntime[] = L"steamxr_win32.json";
 constexpr wchar_t kExeName[] = L"SR2_pc.exe";
 constexpr wchar_t kDllName[] = L"sr2_vr.dll";
 constexpr wchar_t kIniName[] = L"sr2_vr.ini";
@@ -101,9 +114,9 @@ std::wstring SteamDir()
     return dir;
 }
 
-// Le jeu dans une des bibliothèques Steam : lignes « "path" "D:\\SteamLibrary" » de
-// steamapps\libraryfolders.vdf. "" si absent.
-std::wstring FindInSteamLibraries()
+// Dossier `subDir` contenant `file` dans une des bibliothèques Steam : lignes
+// « "path" "D:\\SteamLibrary" » de steamapps\libraryfolders.vdf. "" si absent.
+std::wstring FindInSteamLibraries(const wchar_t* subDir, const wchar_t* file)
 {
     const std::wstring steam = SteamDir();
     if (steam.empty())
@@ -132,8 +145,8 @@ std::wstring FindInSteamLibraries()
         fclose(f);
     }
     for (const std::wstring& library : libraries) {
-        const std::wstring dir = library + kSteamSubDir;
-        if (FileExists(dir + L"\\" + kExeName))
+        const std::wstring dir = library + subDir;
+        if (FileExists(dir + L"\\" + file))
             return dir;
     }
     return {};
@@ -154,6 +167,27 @@ bool IsX86Executable(const std::wstring& path)
                     header.Machine == IMAGE_FILE_MACHINE_I386;
     fclose(f);
     return ok;
+}
+
+// Manifeste du runtime OpenXR actif pour un processus 32 bits (l'injecteur en est un : il
+// lit la même vue du registre que le jeu). Le chargeur OpenXR lit HKCU avant HKLM.
+std::wstring ActiveRuntime32()
+{
+    for (HKEY hive : {HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE}) {
+        wchar_t path[MAX_PATH * 2]{};
+        DWORD size = sizeof(path);
+        if (RegGetValueW(hive, L"SOFTWARE\\Khronos\\OpenXR\\1", L"ActiveRuntime",
+                         RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, nullptr, path, &size) == ERROR_SUCCESS &&
+            path[0])
+            return path;
+    }
+    return {};
+}
+
+bool IsMeta32Runtime(std::wstring path)
+{
+    std::transform(path.begin(), path.end(), path.begin(), towlower);
+    return path.find(L"oculus_openxr_32") != std::wstring::npos;
 }
 
 // Fenêtre principale visible du processus (hors console de debug de Juiced)
@@ -244,6 +278,7 @@ bool InjectDll(HANDLE process, const std::wstring& dllPath)
 void Usage()
 {
     fwprintf(stderr, L"Usage : sr2_vr_injector [--game-dir <dossier>] [--dll <chemin>] [--early]\n"
+                     L"                        [--steamvr | --runtime <json> | --default-runtime]\n"
                      L"                        [--wait] [--timeout <s>] [-- <arguments du jeu>]\n");
 }
 
@@ -265,6 +300,9 @@ int wmain(int argc, wchar_t** argv)
     std::wstring gameArgs;
     bool early = false;
     bool wait = false;
+    bool steamvr = false;
+    bool defaultRuntime = false;
+    std::wstring runtimeJson;
     DWORD timeoutSec = 120;
 
     for (int i = 1; i < argc; ++i) {
@@ -279,6 +317,12 @@ int wmain(int argc, wchar_t** argv)
             early = true;
         } else if (a == L"--wait") {
             wait = true;
+        } else if (a == L"--steamvr") {
+            steamvr = true;
+        } else if (a == L"--runtime" && i + 1 < argc) {
+            runtimeJson = argv[++i];
+        } else if (a == L"--default-runtime") {
+            defaultRuntime = true;
         } else if (a == L"--") {
             for (++i; i < argc; ++i) {
                 if (!gameArgs.empty())
@@ -306,7 +350,7 @@ int wmain(int argc, wchar_t** argv)
         } else if (fromIni[0]) {
             gameDir = fromIni;
             source = L"sr2_vr.ini";
-        } else if (gameDir = FindInSteamLibraries(); !gameDir.empty()) {
+        } else if (gameDir = FindInSteamLibraries(kSteamSubDir, kExeName); !gameDir.empty()) {
             source = L"bibliothèque Steam";
         } else {
             gameDir = kDefaultGameDir;
@@ -339,6 +383,44 @@ int wmain(int argc, wchar_t** argv)
     }
     if (!FileExists(gameDir + L"\\juiced.ini"))
         Out(stdout, L"[injector] ATTENTION : juiced.ini absent, Juiced Patch ne semble pas installé\n");
+
+    // Runtime OpenXR de ce lancement : variable XR_RUNTIME_JSON héritée par le jeu (le
+    // chargeur OpenXR la préfère au runtime actif de Windows)
+    const std::wstring active = ActiveRuntime32();
+    if (defaultRuntime && runtimeJson.empty()) {
+        // Rendu explicite : la DLL refuse sinon le runtime 32 bits de Meta
+        runtimeJson = active;
+        if (active.empty())
+            Out(stdout, L"[injector] ATTENTION : aucun runtime OpenXR 32 bits actif dans Windows\n");
+    } else if (!steamvr && runtimeJson.empty() && IsMeta32Runtime(active)) {
+        if (FindInSteamLibraries(kSteamVrSubDir, kSteamVrRuntime).empty()) {
+            Out(stdout, L"[injector] ATTENTION : le runtime actif est celui de Meta, dont la version 32 bits plante ;\n"
+                        L"[injector]             SteamVR est introuvable : le jeu sera lance sans VR\n");
+        } else {
+            steamvr = true;
+            Out(stdout, L"[injector] Runtime actif : Meta, dont la version 32 bits plante -> SteamVR a la place\n"
+                        L"[injector]             (--default-runtime pour garder celui de Windows)\n");
+        }
+    }
+    if (steamvr && runtimeJson.empty()) {
+        const std::wstring dir = FindInSteamLibraries(kSteamVrSubDir, kSteamVrRuntime);
+        if (dir.empty()) {
+            Out(stderr, L"[injector] ERREUR : SteamVR (%s) introuvable dans les bibliothèques Steam\n", kSteamVrRuntime);
+            return 1;
+        }
+        runtimeJson = dir + L"\\" + kSteamVrRuntime;
+    }
+    if (!runtimeJson.empty()) {
+        runtimeJson = FullPath(runtimeJson);
+        if (!FileExists(runtimeJson)) {
+            Out(stderr, L"[injector] ERREUR : runtime OpenXR introuvable : %s\n", runtimeJson.c_str());
+            return 1;
+        }
+        SetEnvironmentVariableW(L"XR_RUNTIME_JSON", runtimeJson.c_str());
+        Out(stdout, L"[injector] OpenXR    : %s\n", runtimeJson.c_str());
+    } else {
+        Out(stdout, L"[injector] OpenXR    : runtime actif de Windows\n");
+    }
 
     // CreateProcessW peut modifier la ligne de commande : il lui faut un tampon modifiable
     std::wstring cmdLine = L"\"" + exePath + L"\"";

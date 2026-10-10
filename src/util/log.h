@@ -3,8 +3,8 @@
 
 namespace vrlog {
 
-// Ouvre sr2_vr.log à côté de la DLL (vidé à chaque session)
-void Init(HMODULE self);
+// Ouvre le fichier de log à côté du module (vidé à chaque session)
+void Init(HMODULE self, const char* fileName = "sr2_vr.log");
 
 // Écrit une ligne : Write("[render]", "Present hooké à %p", addr)
 void Write(const char* tag, const char* fmt, ...);

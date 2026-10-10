@@ -6,9 +6,11 @@
 // de d3d9.h. Le device du jeu existe déjà à l'injection : ses appels passent par ces mêmes
 // fonctions de d3d9.dll.
 //
-// Jalon 2 : on compte les images et on décrit le rendu (thread, device, cibles de rendu,
-// scènes par image) sans rien modifier.
+// On compte les images, on décrit le rendu (thread, device, cibles de rendu, scènes par
+// image) et on copie le back buffer pour le casque (render/frame_capture), sans rien
+// modifier au rendu du jeu.
 #include "render/d3d9_hook.h"
+#include "render/frame_capture.h"
 #include "util/hook.h"
 #include "util/log.h"
 
@@ -61,7 +63,6 @@ PresentExFn g_presentEx = nullptr;
 ResetExFn g_resetEx = nullptr;
 
 std::vector<void*> g_targets; // fonctions détournées par MinHook
-int g_hookCount = 0;
 
 // Indice tiré des sources de Juiced (Render3D.cpp, bitmap.cpp) : variable globale de l'exe
 // qui contient le device du jeu. Sert seulement à recouper ce que le hook observe, et
@@ -163,6 +164,9 @@ void LogDeviceInfo(IDirect3DDevice9* device)
 
 void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
 {
+    // Le back buffer contient encore l'image finie : copie pour le casque si demandée
+    CaptureFrame(device);
+
     const unsigned long long n = ++g_frames;
     const ULONGLONG now = GetTickCount64();
 
@@ -291,11 +295,8 @@ HRESULT STDMETHODCALLTYPE HkResetEx(IDirect3DDevice9Ex* self, D3DPRESENT_PARAMET
 template <typename Fn>
 bool Hook(void* object, int index, Fn detour, Fn* original, const char* name)
 {
-    if (!hook::HookMethod(object, index, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(original), name,
-                          "[render]", g_targets))
-        return false;
-    ++g_hookCount;
-    return true;
+    return hook::HookMethod(object, index, reinterpret_cast<void*>(detour), reinterpret_cast<void**>(original), name,
+                            "[render]", g_targets);
 }
 
 HWND CreateDummyWindow()
@@ -417,11 +418,13 @@ bool InstallD3D9Hooks()
 
     DestroyWindow(wnd);
 
-    if (!g_hookCount) {
+    if (g_targets.empty()) {
         LOG_RENDER("ERREUR : aucun hook installe, rendu non intercepte");
         return false;
     }
-    LOG_RENDER("%d methode(s) detournee(s), en attente du premier Present du jeu", g_hookCount);
+    if (!hook::ApplyQueued("[render]"))
+        return false;
+    LOG_RENDER("%zu fonction(s) detournee(s) et activee(s), en attente du premier Present du jeu", g_targets.size());
     return true;
 }
 

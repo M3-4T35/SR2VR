@@ -50,7 +50,7 @@ bool HookMethod(void* object, int index, void* detour, void** original, const ch
 
     MH_STATUS st = MH_CreateHook(target, detour, original);
     if (st == MH_OK)
-        st = MH_EnableHook(target);
+        st = MH_QueueEnableHook(target);
     if (st != MH_OK) {
         vrlog::Write(prefix, "  %-36s %s ECHEC MinHook : %s", name, Describe(target).c_str(), MH_StatusToString(st));
         MH_RemoveHook(target);
@@ -63,6 +63,14 @@ bool HookMethod(void* object, int index, void* detour, void** original, const ch
         vrlog::Write(prefix, "  %-36s %s detournee, DEJA DETOURNEE vers %s (on passe avant)", name,
                      Describe(target).c_str(), neighbour.c_str());
     return true;
+}
+
+bool ApplyQueued(const char* prefix)
+{
+    const MH_STATUS st = MH_ApplyQueued();
+    if (st != MH_OK)
+        vrlog::Write(prefix, "ERREUR : activation des detours : %s", MH_StatusToString(st));
+    return st == MH_OK;
 }
 
 void RemoveAll(std::vector<void*>& mhTargets)

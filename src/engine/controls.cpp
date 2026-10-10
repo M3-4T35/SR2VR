@@ -31,14 +31,34 @@ constexpr char kCommandTableSig[] =
 constexpr int kCommandTableOffset = 2;
 constexpr int kCommandCount = 0x840 / 0x10;
 constexpr size_t kCommandSize = 0x10;
-// Fonction de tir des personnages : avec une arme dans chaque main, l'arme de gauche ne tire
-// que si le chargeur contient un nombre impair de balles (droite, gauche, droite...).
-// cmp [edi+0CCh],0 ; jne ... ; cmp byte [ebp+18h],0 ; je ... ; mov eax,[esp+2Ch] ;
-// test byte [eax],1 ; je <pas de tir>. Ce dernier saut est neutralisé : la main gauche tire
-// quand sa gâchette le demande.
-constexpr char kLeftParitySig[] = "83 BF CC 00 00 00 00 75 ?? 80 7D 18 00 74 ?? 8B 44 24 ?? F6 00 01 0F 84 ?? ?? ?? ??";
-constexpr int kLeftParityJump = 22;
-constexpr size_t kLeftParitySize = 6;
+// Fonction de tir des personnages (0x009C0500), avec une arme dans chaque main : trois sauts
+// modifiés en mémoire pour que la main qui tire soit toujours celle que demande l'argument
+// « autre main » (que engine/aim remplace par la main de la gâchette).
+struct Patch {
+    const char* name;
+    const char* signature;
+    int offset;          // du début de la signature à l'instruction modifiée
+    int size;
+    uint8_t expected[6]; // ce qu'on doit y trouver (0xFF = n'importe quoi)
+    uint8_t replacement[6];
+    uint8_t* site;       // nullptr tant que la modification n'est pas posée
+    uint8_t saved[6];
+};
+Patch g_patches[] = {
+    // L'arme de gauche ne tirait que si le chargeur contient un nombre impair de balles :
+    // cmp [edi+0CCh],0 ; jne ... ; cmp byte [ebp+18h],0 ; je ... ; mov eax,[esp+2Ch] ;
+    // test byte [eax],1 ; je <pas de tir> -> saut supprimé
+    {"alternance du chargeur", "83 BF CC 00 00 00 00 75 ?? 80 7D 18 00 74 ?? 8B 44 24 ?? F6 00 01 0F 84 ?? ?? ?? ??", 22, 6,
+     {0x0F, 0x84, 0xFF, 0xFF, 0xFF, 0xFF}, {0x90, 0x90, 0x90, 0x90, 0x90, 0x90}, nullptr, {}},
+    // Détente autre que « coup par coup » (rafale, rapide : Kobra, mitraillettes) : les deux
+    // armes partaient à chaque coup. cmp [esi+0CCh],0 ; je <main demandée> ; ... -> jmp
+    {"deux armes ensemble", "83 BE CC 00 00 00 00 74 0E 8B 44 24 ?? 83 38 01 0F 9F 44 24 ?? EB ?? 80 7D 18 00", 7, 1,
+     {0x74}, {0xEB}, nullptr, {}},
+    // Même cas, drapeaux « cette main a tiré » : cmp [edx+0CCh],0 ; je <main demandée> ;
+    // or byte [eax+0Ch],6 -> jmp
+    {"drapeaux des deux armes", "83 BA CC 00 00 00 00 74 06 80 48 0C 06 EB ?? 80 7D 18 00 75 ?? 80 48 0C 02", 7, 1,
+     {0x74}, {0xEB}, nullptr, {}},
+};
 
 // Numéros des commandes (table des noms du jeu : PICKUP_RELOAD, ATTACK_PRIMARY, ATTACK_SECONDARY ;
 // en véhicule FIREARM et, juste après, le tir secondaire)
@@ -62,8 +82,6 @@ struct Trigger {
     int hold = 0;
 };
 Trigger g_left, g_right;
-uint8_t* g_parityJump = nullptr;
-uint8_t g_parityBytes[kLeftParitySize]{};
 int g_aimHand = 1;
 int g_fireWanted = -1; // deux armes : main de la seule gâchette tenue (ou de celle qui vient d'être pressée), -1 sinon
 int g_fireTurn = 1;    // deux gâchettes tenues : main du prochain coup
@@ -218,22 +236,31 @@ bool Install()
     }
     g_target = update;
     input::actions::SetDirect(true);
-    // Deux armes : l'arme de gauche est libérée de l'alternance imposée par le chargeur. Sans
-    // cela, la gâchette gauche seule ne tirerait qu'un coup sur deux.
-    auto* parity = static_cast<uint8_t*>(pattern::Find("alternance des deux armes", kLeftParitySig));
-    static const uint8_t kNops[kLeftParitySize] = {0x90, 0x90, 0x90, 0x90, 0x90, 0x90};
-    if (parity) {
-        memcpy(g_parityBytes, parity + kLeftParityJump, kLeftParitySize);
-        if (g_parityBytes[0] == 0x0F && g_parityBytes[1] == 0x84 && WriteCode(parity + kLeftParityJump, kNops, kLeftParitySize))
-            g_parityJump = parity + kLeftParityJump;
+    // Deux armes : la main qui tire devient celle que demande la gâchette
+    int applied = 0;
+    for (Patch& patch : g_patches) {
+        auto* found = static_cast<uint8_t*>(pattern::Find(patch.name, patch.signature));
+        if (!found)
+            continue;
+        uint8_t* site = found + patch.offset;
+        bool expected = true;
+        for (int i = 0; i < patch.size; ++i)
+            expected = expected && (patch.expected[i] == 0xFF || patch.expected[i] == site[i]);
+        if (!expected) {
+            LOG_ENGINE("commandes : %s : code inattendu en exe+0x%lX, laisse tel quel", patch.name,
+                       static_cast<unsigned long>(reinterpret_cast<uintptr_t>(site) - base));
+            continue;
+        }
+        memcpy(patch.saved, site, static_cast<size_t>(patch.size));
+        if (WriteCode(site, patch.replacement, static_cast<size_t>(patch.size))) {
+            patch.site = site;
+            ++applied;
+        }
     }
-    if (g_parityJump)
-        LOG_ENGINE("commandes : alternance des deux armes levee en exe+0x%lX, l'arme de gauche tire quand sa gachette "
-                   "le demande",
-                   static_cast<unsigned long>(reinterpret_cast<uintptr_t>(g_parityJump) - base));
-    else
-        LOG_ENGINE("commandes : alternance des deux armes introuvable, l'arme de gauche ne tirera qu'apres celle de "
-                   "droite");
+    const int wanted = static_cast<int>(sizeof(g_patches) / sizeof(g_patches[0]));
+    LOG_ENGINE("commandes : tir a deux armes, %d modification(s) sur %d posee(s)%s", applied, wanted,
+               applied == wanted ? " : chaque gachette tire avec son arme, quelle que soit l'arme"
+                                 : " : certaines armes tenues en double tireront encore ensemble ou en alternance");
     LOG_ENGINE("commandes : lecture des entrees detournee (exe+0x%lX), %d cases en exe+0x%lX, table des commandes "
                "exe+0x%lX : les gachettes sont posees directement dans le jeu",
                static_cast<unsigned long>(reinterpret_cast<uintptr_t>(update) - base), g_slotCount,
@@ -245,9 +272,10 @@ bool Install()
 void Remove()
 {
     input::actions::SetDirect(false);
-    if (g_parityJump) {
-        WriteCode(g_parityJump, g_parityBytes, kLeftParitySize);
-        g_parityJump = nullptr;
+    for (Patch& patch : g_patches) {
+        if (patch.site)
+            WriteCode(patch.site, patch.saved, static_cast<size_t>(patch.size));
+        patch.site = nullptr;
     }
     if (g_target) {
         MH_DisableHook(g_target);

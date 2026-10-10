@@ -29,6 +29,11 @@ constexpr char kWeaponUpdateSig[] =
 // tenue (c'est lui qui appelle la fonction de tir des personnages, celle qui crée la balle) :
 // sub esp,8 ; mov ecx,[joueur] ; test ecx,ecx ; push ebx ; push ebp ; push esi ; mov ebx,ecx ;
 // push edi ; mov [esp+10h],ebx ; je ... ; mov edx,[ecx+10CCh] ; test edx,edx ; lea edi,[ecx+10CCh]
+// Fonction de tir des personnages, bool __cdecl(personnage, cible, 0, 0, autre main, tir
+// secondaire, 0) : push ebp ; mov ebp,esp ; and esp,-8 ; sub esp,0A64h ; push ebx ;
+// mov ebx,[ebp+8] ; test ebx,ebx ; push esi ; push edi ; je ... ; mov eax,[ebx+10CCh]
+constexpr char kCharacterFireSig[] =
+    "55 8B EC 83 E4 F8 81 EC 64 0A 00 00 53 8B 5D 08 85 DB 56 57 0F 84 ?? ?? ?? ?? 8B 83 CC 10 00 00";
 constexpr char kPlayerFireSig[] = "83 EC 08 8B 0D ?? ?? ?? ?? 85 C9 53 55 56 8B D9 57 89 5C 24 10 74 ?? 8B 91 CC 10 00 00 85 "
                                   "D2 8D B9 CC 10 00 00";
 // Direction de visée d'un personnage (sert à lire deux adresses, pas détournée) : sub esp,4Ch ;
@@ -58,16 +63,7 @@ constexpr ptrdiff_t kIdealOrientDelta = 0x24;
 constexpr size_t kAimTarget = 0x11C8;
 constexpr size_t kAimPoint = 0x11CC;
 // Dans la case d'inventaire de l'arme en main : sa description, les balles du chargeur
-constexpr size_t kSlotInfo = 8;
 constexpr size_t kSlotAmmo = 0x10;
-// Drapeaux de la case ; bit 0 : l'arme « coup par coup » a tiré, la détente doit être relâchée
-// avant le coup suivant (le jeu ne l'applique qu'à la main droite et le lève au relâchement)
-constexpr size_t kSlotFlags = 0xC;
-constexpr uint8_t kSlotFired = 1;
-// Dans la description : type de détente du tir principal (0 coup par coup, 1 rafale, 2 rapide,
-// 3 continu). Avec une arme dans chaque main, le jeu ne tire main par main que pour le type 0 ;
-// pour les autres, les deux armes partent ensemble à chaque coup.
-constexpr size_t kInfoTrigger = 0xCC;
 constexpr ULONGLONG kSightMaxAgeMs = 200;
 // Le tir ne recalcule le point visé que si le jeu le calcule lui-même en ce moment
 constexpr ULONGLONG kFreeAimMaxAgeMs = 250;
@@ -75,12 +71,15 @@ constexpr ULONGLONG kFreeAimMaxAgeMs = 250;
 using AimPointFn = int(__cdecl*)(uint8_t* player, float* out);
 using WeaponUpdateFn = int(__cdecl*)(uint8_t* human);
 using PlayerFireFn = bool(__cdecl*)(int offhand);
+using CharacterFireFn = bool(__cdecl*)(uint8_t* human, void* target, int a3, int a4, int offhand, int alt, int a7);
 AimPointFn g_aimPoint = nullptr;
 WeaponUpdateFn g_weaponUpdate = nullptr;
 PlayerFireFn g_playerFire = nullptr;
+CharacterFireFn g_characterFire = nullptr;
 void* g_aimPointTarget = nullptr;
 void* g_weaponUpdateTarget = nullptr;
 void* g_playerFireTarget = nullptr;
+void* g_characterFireTarget = nullptr;
 
 float* g_camPos = nullptr;
 float* g_camOrient = nullptr;
@@ -97,7 +96,10 @@ const float* g_startFar = nullptr;
 
 bool g_active = false;
 int g_depth = 0;
-int g_fireHand = -1; // main qui tire, le temps du tir du joueur
+int g_fireHand = -1;       // main qui tire, le temps de la fonction de tir
+int g_playerFireHand = -1; // main demandée par la gâchette, le temps du tir du joueur
+int g_lastFireHand = 1;    // dernière main demandée (pour un tir différé)
+unsigned g_deferred = 0;   // tirs différés (hors du tir du joueur) depuis le dernier relevé
 ULONGLONG g_freeAimTick = 0;
 
 struct Record {
@@ -301,67 +303,60 @@ void AimForShot(uint8_t* player, int hand)
     }
 }
 
-// Tir du joueur. Le jeu l'appelle à chaque image où l'attaque principale est tenue ; offhand
-// est la main qu'il a choisie (son alternance), qu'on remplace par celle de la gâchette.
-//
-// La balle ne va pas au point visé rangé dans le joueur : la fonction qui la crée (0x009BE6F0)
-// redemande un point à 0x009C4560, qui relance un rayon depuis la position finale de la caméra
-// le long de son avant, donc là où porte le regard. Tout le tir se fait donc avec la caméra
-// décrivant le rayon de la main qui tire.
-bool __cdecl HkPlayerFire(int offhand)
+// Fonction de tir des personnages (0x009C0500) : c'est elle qui crée la balle. Deux chemins y
+// mènent pour le joueur : le tir du joueur (0x009D9090, à chaque image où l'attaque est tenue),
+// et la mise à jour du personnage quand un tir attendait la fin d'une animation (arme en train
+// d'être levée : le « premier coup »). Dans les deux cas :
+//  - la balle ne va pas au point visé rangé dans le joueur : la fonction qui la crée
+//    (0x009BE6F0) redemande un point à 0x009C4560, qui relance un rayon depuis la position
+//    finale de la caméra le long de son avant, donc là où porte le regard. Tout l'appel se
+//    fait donc avec la caméra décrivant le rayon de la main qui tire ;
+//  - avec une arme dans chaque main, « autre main » devient la main de la gâchette
+//    (engine/controls a levé ce qui, dans cette fonction, faisait partir les deux armes
+//    ensemble ou imposait l'alternance).
+bool __cdecl HkCharacterFire(uint8_t* human, void* target, int a3, int a4, int offhand, int alt, int a7)
 {
-    auto* player = static_cast<uint8_t*>(player::Local());
-    if (!g_active || g_depth || !player)
-        return g_playerFire(offhand);
+    if (!g_active || g_depth || !player::IsLocal(human))
+        return g_characterFire(human, target, a3, a4, offhand, alt, a7);
 
-    auto* slot = static_cast<uint8_t*>(player::HeldWeaponSlot());
-    uint8_t* info = slot ? *reinterpret_cast<uint8_t**>(slot + kSlotInfo) : nullptr;
     int hand = 1;
-    int trigger = 0;
-    bool forced = false;
-    const int gameOffhand = offhand;
-    if (info && player::DualWielding() && !player::InVehicle()) {
-        hand = controls::FireHand();
-        offhand = hand ? 0 : 1;
-        // Le temps de ce tir, l'arme est « coup par coup » : le jeu ne fait alors partir que
-        // l'arme de la main demandée, à sa cadence
-        memcpy(&trigger, info + kInfoTrigger, sizeof(trigger));
-        if (trigger != 0) {
-            const int single = 0;
-            memcpy(info + kInfoTrigger, &single, sizeof(single));
-            forced = true;
-        }
-        // Gâchette tenue, les deux mains tirent à la cadence de l'arme : sans cela la droite ne
-        // tirerait qu'un coup par appui, la gauche en continu
-        slot[kSlotFlags] &= static_cast<uint8_t>(~kSlotFired);
-        if (!g_dualAnnounced) {
-            g_dualAnnounced = true;
-            LOG_ENGINE("visee : premier tir avec une arme dans chaque main : le jeu demandait la main %s, la gachette "
-                       "la main %s ; type de detente %d%s",
-                       gameOffhand ? "gauche" : "droite", hand ? "droite" : "gauche", trigger,
-                       forced ? " (les deux armes seraient parties ensemble : ramene a une arme par gachette)" : "");
+    if (player::DualWielding() && !player::InVehicle()) {
+        // Tir différé (hors du tir du joueur) : la main du dernier tir demandé
+        hand = g_playerFireHand >= 0 ? g_playerFireHand : g_lastFireHand;
+        if (!(alt & 0xFF)) {
+            if (!g_dualAnnounced) {
+                g_dualAnnounced = true;
+                LOG_ENGINE("visee : premier tir avec une arme dans chaque main : le jeu demandait la main %s, la "
+                           "gachette la main %s",
+                           (offhand & 0xFF) ? "gauche" : "droite", hand ? "droite" : "gauche");
+            }
+            offhand = hand ? 0 : 1;
         }
     }
+    auto* slot = static_cast<uint8_t*>(player::HeldWeaponSlot());
     int before = 0, after = 0;
     if (slot)
         memcpy(&before, slot + kSlotAmmo, sizeof(before));
 
+    // Le tir du joueur a déjà recalculé le point visé ; le tir différé le fait ici
+    if (g_playerFireHand < 0) {
+        AimForShot(human, hand);
+        ++g_deferred;
+    }
     g_fireHand = hand;
-    AimForShot(player, hand);
     bool fired = false;
     float origin[3], orient[9];
     int used = -1;
     if (Ray(hand, false, origin, orient, &used)) {
         Scope scope(origin, orient);
-        fired = g_playerFire(offhand);
-        ++g_scoped[hand];
+        fired = g_characterFire(human, target, a3, a4, offhand, alt, a7);
+        if (used == hand)
+            ++g_scoped[hand];
     } else {
-        fired = g_playerFire(offhand);
+        fired = g_characterFire(human, target, a3, a4, offhand, alt, a7);
     }
     g_fireHand = -1;
 
-    if (forced)
-        memcpy(info + kInfoTrigger, &trigger, sizeof(trigger));
     ++g_calls[hand];
     // Le chargeur peut avoir changé d'arme ou été rempli pendant l'appel : seule une baisse compte
     if (slot && slot == player::HeldWeaponSlot()) {
@@ -369,6 +364,36 @@ bool __cdecl HkPlayerFire(int offhand)
         if (after < before)
             g_bullets[hand] += static_cast<unsigned>(before - after);
     }
+    return fired;
+}
+
+// Tir du joueur (0x009D9090). offhand est la main choisie par le jeu (son alternance) ; on
+// retient celle de la gâchette pour la fonction de tir, et on recalcule d'abord le point visé
+// du joueur avec son rayon (le tir du joueur lit l'objet visé avant de tirer).
+bool __cdecl HkPlayerFire(int offhand)
+{
+    auto* player = static_cast<uint8_t*>(player::Local());
+    if (!g_active || g_depth || !player)
+        return g_playerFire(offhand);
+    const int hand = player::DualWielding() && !player::InVehicle() ? controls::FireHand() : 1;
+    g_lastFireHand = hand;
+    AimForShot(player, hand);
+    g_playerFireHand = hand;
+    bool fired = false;
+    if (g_characterFireTarget) {
+        fired = g_playerFire(offhand);
+    } else {
+        // Fonction de tir non détournée : au moins la caméra sur le rayon pendant le tir
+        float origin[3], orient[9];
+        int used = -1;
+        if (Ray(hand, false, origin, orient, &used)) {
+            Scope scope(origin, orient);
+            fired = g_playerFire(offhand);
+        } else {
+            fired = g_playerFire(offhand);
+        }
+    }
+    g_playerFireHand = -1;
     return fired;
 }
 
@@ -445,6 +470,12 @@ bool Install(float* cameraPos, float* cameraOrient, RayFn ray)
 
     // Tir du joueur : facultatif (sans lui, la balle va au point visé de l'image, celui de la
     // main qui vise)
+    auto* characterFire = static_cast<uint8_t*>(pattern::Find("tir des personnages", kCharacterFireSig));
+    if (characterFire &&
+        Hook(characterFire, reinterpret_cast<void*>(&HkCharacterFire), reinterpret_cast<void**>(&g_characterFire),
+             &g_characterFireTarget, "le tir des personnages"))
+        LOG_ENGINE("visee : tir des personnages exe+0x%lX detourne (premier coup et tirs differes compris)",
+                   rel(characterFire));
     auto* fire = static_cast<uint8_t*>(pattern::Find("tir du joueur", kPlayerFireSig));
     if (fire && Hook(fire, reinterpret_cast<void*>(&HkPlayerFire), reinterpret_cast<void**>(&g_playerFire),
                      &g_playerFireTarget, "le tir du joueur"))
@@ -457,7 +488,7 @@ bool Install(float* cameraPos, float* cameraOrient, RayFn ray)
 
 void Remove()
 {
-    for (void** target : {&g_aimPointTarget, &g_weaponUpdateTarget, &g_playerFireTarget}) {
+    for (void** target : {&g_aimPointTarget, &g_weaponUpdateTarget, &g_playerFireTarget, &g_characterFireTarget}) {
         if (*target) {
             MH_DisableHook(*target);
             MH_RemoveHook(*target);
@@ -492,8 +523,10 @@ void TakeStats(Stats* stats)
         stats->aimed[hand] = g_shots[hand];
         stats->bullets[hand] = g_bullets[hand];
         stats->scoped[hand] = g_scoped[hand];
+        stats->deferred = g_deferred;
         g_calls[hand] = g_shots[hand] = g_bullets[hand] = g_scoped[hand] = 0;
     }
+    g_deferred = 0;
 }
 
 } // namespace engine::aim

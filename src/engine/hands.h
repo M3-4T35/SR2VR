@@ -6,6 +6,7 @@
 // jambes) et demande pour chacun, à une fonction qu'on détourne, s'il a une cible d'IK. Au
 // premier de ces appels, on pose nous-mêmes les deux bras avec les fonctions de pose du jeu
 // (relever les transformations locales des os, les écrire, recalculer le squelette) :
+//  - buste tourné autour de la verticale pour que les épaules fassent face au regard ;
 //  - épaule et coude tournés pour que le poignet arrive à la manette (IK à deux os) ;
 //  - main orientée pour que l'arme qu'elle tient pointe comme la manette : le canon se retrouve
 //    sur le rayon de visée (le trait rouge du casque), et comme le jeu fait partir les balles
@@ -29,11 +30,14 @@ bool Install(FrameFn frame);
 void Remove();
 
 // À chaque mise à jour de la caméra. active : les bras suivent les manettes (première personne
-// à pied). eyeFromRoot : des pieds du personnage à ses yeux, dans le monde.
-void SetFrame(bool active, const float eyeFromRoot[3]);
+// à pied). eyeFromRoot : des pieds du personnage à ses yeux, dans le monde. headRight : la
+// droite de la tête dans le monde. torsoMaxDegrees : jusqu'à quel angle le buste se tourne
+// vers le regard avant de poser les bras (0 = buste laissé à l'animation).
+void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3], float torsoMaxDegrees);
 
-// Relevé pour le log, depuis le dernier appel : images où chaque bras a été posé, et plus
-// grand écart constaté entre le poignet et sa cible après la pose (mètres)
-void TakeStats(unsigned posed[2], float* worstError);
+// Relevé pour le log, depuis le dernier appel : images où chaque bras a été posé, plus grand
+// écart constaté entre le poignet et sa cible après la pose (mètres), images où le buste a été
+// tourné et plus grand angle appliqué (degrés)
+void TakeStats(unsigned posed[2], float* worstError, unsigned* torso, float* torsoWorstDegrees);
 
 } // namespace engine::hands

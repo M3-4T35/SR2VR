@@ -60,6 +60,7 @@ struct Stats {
     unsigned aimed[2]{};
     unsigned bullets[2]{};
     unsigned scoped[2]{}; // tirs faits avec la caméra du jeu décrivant le rayon de cette main
+    unsigned deferred = 0; // dont tirs différés (déclenchés par la fin d'une animation)
 };
 void TakeStats(Stats* stats);
 

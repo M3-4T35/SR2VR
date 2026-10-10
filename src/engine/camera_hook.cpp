@@ -278,6 +278,7 @@ struct Settings {
     // le casque), 3 trait et point dessinés dans l'image du jeu (ancien mode)
     int laser = 1;
     bool handArms = false;       // les bras du personnage sont amenés aux manettes
+    float torsoMax = 90.0f;      // le buste se tourne vers le regard jusqu'à cet angle, en degrés (0 = non)
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -322,6 +323,9 @@ void ReadConfig()
     if (s.laser < 0 || s.laser > 3)
         s.laser = 1;
     s.handArms = config::Int("Hands", "arms", 0) != 0;
+    s.torsoMax = config::Float("Hands", "torso", 90.0f);
+    if (!(s.torsoMax >= 0.0f && s.torsoMax <= 180.0f))
+        s.torsoMax = 90.0f;
     s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
     s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
     s.fpUp = config::Float("FirstPerson", "up", 0.06f);
@@ -510,7 +514,7 @@ void UpdateViewChoice(const Settings& s, bool vehicle)
 // Position de la caméra à la première personne. game : orientation de la caméra du jeu (son
 // cap donne l'avant à pied). false : vue du jeu demandée, pas de joueur ou pas de squelette ;
 // la caméra du jeu reste en place.
-bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
+bool FirstPersonEye(const float game[9], const float* headRight, const Settings& s, float eye[3])
 {
     float head[3], root[3], body[9];
     if (!player::HeadPosition(head, root, body)) {
@@ -556,8 +560,18 @@ bool FirstPersonEye(const float game[9], const Settings& s, float eye[3])
     } else {
         float level[9];
         LevelOrientation(game, level);
+        // Les yeux sont devant le centre de la tête, du côté où elle regarde : l'avant à plat de
+        // la tête (à 90 degrés de sa droite), à défaut celui de la caméra du jeu
+        float forward[3] = {level[6], level[7], level[8]};
+        if (headRight) {
+            const float flat[3] = {-headRight[2], 0.0f, headRight[0]};
+            const float length = std::sqrt(flat[0] * flat[0] + flat[2] * flat[2]);
+            if (length > 0.3f)
+                for (int k = 0; k < 3; ++k)
+                    forward[k] = flat[k] / length;
+        }
         for (int k = 0; k < 3; ++k)
-            eye[k] = root[k] + g_headOffset[k] + s.fpForward * level[6 + k] + s.fpUp * level[3 + k];
+            eye[k] = root[k] + g_headOffset[k] + s.fpForward * forward[k] + s.fpUp * level[3 + k];
     }
     for (int k = 0; k < 3; ++k)
         g_eyeFromRoot[k] = eye[k] - root[k];
@@ -749,7 +763,7 @@ void __cdecl HkUpdateCamera()
     bool firstPerson = false;
     if (state == kPlaying && FirstPersonAllowed()) {
         float eye[3];
-        if (FirstPersonEye(game, s, eye)) {
+        if (FirstPersonEye(game, headed ? g_written : nullptr, s, eye)) {
             memcpy(g_gamePos, g_pos, sizeof(g_gamePos));
             memcpy(g_writtenPos, eye, sizeof(eye));
             memcpy(g_pos, eye, sizeof(eye));
@@ -791,7 +805,7 @@ void __cdecl HkUpdateCamera()
     // mains restent sur le volant)
     if (g_handsReady) {
         g_handsAllowed = s.handArms && firstPerson && !g_inVehicle && tracked;
-        hands::SetFrame(g_handsAllowed, g_eyeFromRoot);
+        hands::SetFrame(g_handsAllowed, g_eyeFromRoot, headed ? g_written : game, s.torsoMax);
     }
     // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
     const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
@@ -837,9 +851,10 @@ void __cdecl HkUpdateCamera()
             LOG_ENGINE("  visee : %u points vises avec nos rayons%s", stats.points,
                        player::DualWielding() ? " ; une arme dans chaque main" : "");
             if (stats.calls[0] + stats.calls[1])
-                LOG_ENGINE("    tir : main gauche %u images de tir, %u avec son rayon, %u balles ; main droite %u, %u, %u",
+                LOG_ENGINE("    tir : main gauche %u images de tir, %u avec son rayon, %u balles ; main droite %u, %u, %u ; "
+                           "%u tir(s) differe(s)",
                            stats.calls[0], stats.scoped[0], stats.bullets[0], stats.calls[1], stats.scoped[1],
-                           stats.bullets[1]);
+                           stats.bullets[1], stats.deferred);
             static const char* const kRays[] = {"regard", "main gauche", "main droite"};
             for (int hand = -1; hand < 2; ++hand) {
                 aim::Sight sight;
@@ -852,13 +867,13 @@ void __cdecl HkUpdateCamera()
             }
         }
         if (g_handsReady) {
-            unsigned posed[2];
-            float worst = 0.0f;
-            hands::TakeStats(posed, &worst);
-            if (posed[0] + posed[1])
+            unsigned posed[2], torso = 0;
+            float worst = 0.0f, torsoWorst = 0.0f;
+            hands::TakeStats(posed, &worst, &torso, &torsoWorst);
+            if (posed[0] + posed[1] + torso)
                 LOG_ENGINE("  mains : bras gauche pose sur %u images, bras droit sur %u, plus grand ecart poignet - cible "
-                           "%.3f m",
-                           posed[0], posed[1], worst);
+                           "%.3f m ; buste tourne sur %u images, jusqu'a %.0f degres",
+                           posed[0], posed[1], worst, torso, torsoWorst);
         }
         if (firstPerson)
             LOG_ENGINE("  premiere personne : tete a %.2f m au-dessus de la racine, camera du jeu a %.2f m des yeux",

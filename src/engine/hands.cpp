@@ -81,6 +81,11 @@ FrameFn g_frameFn = nullptr;
 
 bool g_active = false;
 float g_eyeFromRoot[3]{};
+float g_headRight[3]{1.0f, 0.0f, 0.0f}; // droite de la tête, dans le monde
+float g_torsoMax = 0.0f;                // tour maximal du buste vers le regard, en radians (0 = coupé)
+unsigned g_torsoCount = 0;
+float g_torsoWorst = 0.0f;              // plus grand tour appliqué depuis le dernier relevé (radians)
+bool g_torsoShown = false;
 
 // Os des bras, retrouvés par leur nom dans le squelette du joueur (0 gauche, 1 droite)
 struct Arm {
@@ -94,6 +99,11 @@ Arm g_arms[2];
 constexpr int kMaxArmBones = 64;
 int g_armBones[2][kMaxArmBones];
 int g_armBoneCount[2]{};
+// Buste : l'os « Spine » (au-dessus du bassin), son parent, et tout ce qu'il entraîne (colonne,
+// tête, bras)
+int g_spine = -1, g_spineParent = -1;
+int g_spineBones[kMaxBones];
+int g_spineBoneCount = 0;
 // Sens des transformations locales, constaté sur la pose du jeu : 1 = local[i][j] est l'axe i
 // de l'os le long de l'axe j de son parent, 2 = la transposée, 0 = pas encore constaté,
 // -1 = ni l'un ni l'autre (bras laissés à l'animation)
@@ -264,6 +274,17 @@ void ResolveRig(uintptr_t rig)
             if (ancestor == arm.shoulder && g_armBoneCount[hand] < kMaxArmBones)
                 g_armBones[hand][g_armBoneCount[hand]++] = bone;
         }
+    }
+    // Buste
+    g_spine = FindBone(table, count, "Spine");
+    g_spineParent = g_spine >= 0 ? *reinterpret_cast<const int*>(table + static_cast<size_t>(g_spine) * kBoneSize + kBoneParent) : -1;
+    g_spineBoneCount = 0;
+    for (int bone = 0; g_spine >= 0 && g_spineParent >= 0 && g_spineParent < count && bone < count; ++bone) {
+        int ancestor = bone;
+        for (int depth = 0; depth < 32 && ancestor >= 0 && ancestor < count && ancestor != g_spine; ++depth)
+            ancestor = *reinterpret_cast<const int*>(table + static_cast<size_t>(ancestor) * kBoneSize + kBoneParent);
+        if (ancestor == g_spine)
+            g_spineBones[g_spineBoneCount++] = bone;
     }
     g_rigOk = ok;
     if (ok)
@@ -527,6 +548,81 @@ void FindConvention(const Skeleton& skeleton)
                direct, transposed);
 }
 
+// Écrit g_locals : les os périmés sont recalculés par le jeu, puis leurs matrices finales.
+// L'échelle et la hauteur de la racine, que l'écriture réapplique, en sont d'abord retirées.
+void WritePose(const Skeleton& skeleton, bool scaled, const float scale[3])
+{
+    g_locals[10] -= *reinterpret_cast<const float*>(skeleton.instance + kInstRootLift);
+    for (int axis = 0; scaled && axis < 3; ++axis) {
+        for (int k = 0; k < 3; ++k)
+            g_locals[axis * 3 + k] /= scale[axis];
+        g_locals[9 + axis] /= scale[axis];
+    }
+    g_setPose(skeleton.instance, g_locals, nullptr, 0);
+    g_updatePose(skeleton.instance, nullptr, 0);
+}
+
+void MarkStale(const Skeleton& skeleton, const int* bones, int count)
+{
+    for (int i = 0; i < count; ++i) {
+        const int slot = skeleton.Slot(bones[i]);
+        if (slot > 0)
+            *reinterpret_cast<uint32_t*>(skeleton.flags + static_cast<size_t>(slot) * kFlagSize) &= ~kFlagStale;
+    }
+}
+
+// Tourne le buste (os « Spine » et tout ce qu'il porte) autour de la verticale pour que les
+// épaules fassent face au regard. Le jeu oriente le corps selon la marche ou sa caméra ; en VR
+// la tête regarde ailleurs, et des bras posés sur les manettes depuis des épaules mal tournées
+// se tordent. g_locals doit contenir la pose relevée. true : pose écrite (à relever de nouveau).
+bool TwistTorso(const Skeleton& skeleton, const float* rootOrient, bool scaled, const float scale[3])
+{
+    if (!(g_torsoMax > 0.0f) || g_spine < 0 || g_spineBoneCount <= 0)
+        return false;
+    const int spine = skeleton.Slot(g_spine), parent = skeleton.Slot(g_spineParent);
+    const int left = skeleton.Slot(g_arms[0].shoulder), right = skeleton.Slot(g_arms[1].shoulder);
+    if (spine <= 0 || parent < 0 || left < 0 || right < 0)
+        return false;
+    // Sens actuel des épaules et sens voulu (la droite de la tête), à plat dans le repère du
+    // personnage : l'avant est à 90 degrés de la droite
+    const float* l = skeleton.Matrix(left) + 9;
+    const float* r = skeleton.Matrix(right) + 9;
+    const float shoulders[2] = {r[0] - l[0], r[2] - l[2]};
+    const float head[2] = {Dot(g_headRight, rootOrient), Dot(g_headRight, rootOrient + 6)};
+    if (shoulders[0] * shoulders[0] + shoulders[1] * shoulders[1] < 0.01f * 0.01f ||
+        head[0] * head[0] + head[1] * head[1] < 0.3f * 0.3f)
+        return false; // tête penchée sur le côté à plus de 70 degrés : sens du regard incertain
+    float turn = std::atan2(-head[1], head[0]) - std::atan2(-shoulders[1], shoulders[0]);
+    const float kPi = 3.14159265f;
+    while (turn > kPi)
+        turn -= 2.0f * kPi;
+    while (turn < -kPi)
+        turn += 2.0f * kPi;
+    turn = turn > g_torsoMax ? g_torsoMax : turn < -g_torsoMax ? -g_torsoMax : turn;
+    if (std::fabs(turn) < 0.01f)
+        return false;
+    // Rotation autour de la verticale du personnage (x à droite, y en haut, z devant) : l'avant
+    // tourne vers la droite pour un angle positif
+    const float c = std::cos(turn), sn = std::sin(turn);
+    const float rotation[9] = {c, 0.0f, sn, 0.0f, 1.0f, 0.0f, -sn, 0.0f, c};
+    float axes[9], turned[9], parentAxes[9];
+    UnitAxes(skeleton.Matrix(spine), axes);
+    RotateAxes(rotation, axes, turned);
+    UnitAxes(skeleton.Matrix(parent), parentAxes);
+    ToLocal(turned, parentAxes, g_locals + static_cast<size_t>(spine) * kFloatsPerBone);
+    MarkStale(skeleton, g_spineBones, g_spineBoneCount);
+    WritePose(skeleton, scaled, scale);
+    ++g_torsoCount;
+    if (std::fabs(turn) > g_torsoWorst)
+        g_torsoWorst = std::fabs(turn);
+    if (!g_torsoShown) {
+        g_torsoShown = true;
+        LOG_ENGINE("mains : buste tourne vers le regard (%.0f degres a cette image, %d os entraines)",
+                   static_cast<double>(turn * 57.29578f), g_spineBoneCount);
+    }
+    return true;
+}
+
 // Annonce une fois la raison pour laquelle les bras restent à l'animation (0 : ils sont posés)
 void Skip(int reason, const char* text)
 {
@@ -582,6 +678,17 @@ void PoseArms(uint8_t* character)
     for (int k = 0; k < 3; ++k)
         eye[k] = root[k] + g_eyeFromRoot[k];
 
+    g_getPose(skeleton.instance, g_locals);
+    if (g_convention == 0) {
+        FindConvention(skeleton);
+        if (g_convention < 0)
+            return;
+        if (scaled)
+            LOG_ENGINE("mains : personnage a l'echelle (%.3f, %.3f, %.3f)", scale[0], scale[1], scale[2]);
+    }
+    // Buste face au regard d'abord : les épaules bougent, les bras sont posés ensuite
+    const bool twisted = TwistTorso(skeleton, rootOrient, scaled, scale);
+
     // Manettes suivies ? Sinon rien à poser, et pas la peine de relever la pose
     float grip[2][3], origin[2][3], orient[2][9];
     bool tracked[2];
@@ -595,19 +702,13 @@ void PoseArms(uint8_t* character)
     if (!tracked[0] && !tracked[1])
         return Skip(5, "manettes non suivies");
 
-    // Armes dans les mains, sur la pose de l'animation
+    // Armes dans les mains (la mesure ne dépend pas de la pose : l'arme est fixe dans la main)
     for (int hand = 0; hand < 2; ++hand)
         if (tracked[hand])
             MeasureGrip(character, skeleton, hand);
 
-    g_getPose(skeleton.instance, g_locals);
-    if (g_convention == 0) {
-        FindConvention(skeleton);
-        if (g_convention < 0)
-            return;
-        if (scaled)
-            LOG_ENGINE("mains : personnage a l'echelle (%.3f, %.3f, %.3f)", scale[0], scale[1], scale[2]);
-    }
+    if (twisted)
+        g_getPose(skeleton.instance, g_locals);
     const int shoulderSlots[2] = {skeleton.Slot(g_arms[0].shoulder), skeleton.Slot(g_arms[1].shoulder)};
     float targets[2][3];
     for (int hand = 0; hand < 2; ++hand) {
@@ -622,21 +723,10 @@ void PoseArms(uint8_t* character)
     Skip(0, "");
     // Les os des bras posés sont périmés : le jeu les recalcule d'après nos transformations
     // locales, puis leurs matrices finales
-    for (int hand = 0; hand < 2; ++hand) {
-        for (int i = 0; g_posed[hand] && i < g_armBoneCount[hand]; ++i) {
-            const int slot = skeleton.Slot(g_armBones[hand][i]);
-            if (slot > 0)
-                *reinterpret_cast<uint32_t*>(skeleton.flags + static_cast<size_t>(slot) * kFlagSize) &= ~kFlagStale;
-        }
-    }
-    g_locals[10] -= *reinterpret_cast<const float*>(skeleton.instance + kInstRootLift);
-    for (int axis = 0; scaled && axis < 3; ++axis) {
-        for (int k = 0; k < 3; ++k)
-            g_locals[axis * 3 + k] /= scale[axis];
-        g_locals[9 + axis] /= scale[axis];
-    }
-    g_setPose(skeleton.instance, g_locals, nullptr, 0);
-    g_updatePose(skeleton.instance, nullptr, 0);
+    for (int hand = 0; hand < 2; ++hand)
+        if (g_posed[hand])
+            MarkStale(skeleton, g_armBones[hand], g_armBoneCount[hand]);
+    WritePose(skeleton, scaled, scale);
 
     // Contrôle : le poignet est-il arrivé ?
     for (int hand = 0; hand < 2; ++hand) {
@@ -727,7 +817,7 @@ void Remove()
     }
 }
 
-void SetFrame(bool active, const float eyeFromRoot[3])
+void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3], float torsoMaxDegrees)
 {
     g_active = active && g_target != nullptr;
     if (!g_active) {
@@ -735,15 +825,21 @@ void SetFrame(bool active, const float eyeFromRoot[3])
         return;
     }
     memcpy(g_eyeFromRoot, eyeFromRoot, sizeof(g_eyeFromRoot));
+    memcpy(g_headRight, headRight, sizeof(g_headRight));
+    g_torsoMax = torsoMaxDegrees > 0.0f ? (torsoMaxDegrees > 180.0f ? 180.0f : torsoMaxDegrees) * 0.01745329f : 0.0f;
 }
 
-void TakeStats(unsigned posed[2], float* worstError)
+void TakeStats(unsigned posed[2], float* worstError, unsigned* torso, float* torsoWorstDegrees)
 {
     posed[0] = g_posedCount[0];
     posed[1] = g_posedCount[1];
     *worstError = g_worstError;
+    *torso = g_torsoCount;
+    *torsoWorstDegrees = g_torsoWorst * 57.29578f;
     g_posedCount[0] = g_posedCount[1] = 0;
     g_worstError = 0.0f;
+    g_torsoCount = 0;
+    g_torsoWorst = 0.0f;
 }
 
 } // namespace engine::hands

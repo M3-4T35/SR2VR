@@ -150,12 +150,18 @@ std::wstring TabNote(int tab)
                  L"Mettez le casque et lancez SteamVR avant de cliquer sur JOUER. Gardez la fenêtre du jeu au premier "
                  L"plan pendant la partie : les sticks passent par le clavier et la souris.");
     case settings::kTabControls:
-        return T(L"Left stick: move (click: next view).  Right stick: turn, up = jump, down = crouch (click: weapon "
-                 L"wheel).  Triggers: fire, each hand its own gun.  Right grip: action.  Left grip: sprint.  X: reload.  "
-                 L"A: confirm.  B or left menu: back / pause.",
-                 L"Stick gauche : déplacement (clic : vue suivante).  Stick droit : tourner, haut = sauter, bas = "
-                 L"s'accroupir (clic : roue des armes).  Gâchettes : tir, chaque main son arme.  Poignée droite : action.  "
-                 L"Poignée gauche : courir.  X : recharger.  A : valider.  B ou menu gauche : retour / pause.");
+        return T(L"Left stick: move (click: food and health, chosen with the stick; held click: next view).  Right stick: "
+                 L"turn, up = jump, down = crouch (click: weapon wheel).  Triggers: fire.  Right grip or Y: action.  Left "
+                 L"grip: sprint.  X: reload / pick up.  A: confirm.  B: back / pause.\n"
+                 L"Steam Frame controllers: D-pad up = recruit / dismiss, left and right = taunts, down = cancel activity.  "
+                 L"Left top button = human shield, right top button = previous weapon.  View = next view, Menu = map.",
+                 L"Stick gauche : déplacement (clic : nourriture et soins, choisis au stick ; clic tenu : vue suivante).  "
+                 L"Stick droit : tourner, haut = sauter, bas = s'accroupir (clic : roue des armes).  Gâchettes : tir.  "
+                 L"Poignée droite ou Y : action.  Poignée gauche : courir.  X : recharger / ramasser.  A : valider.  "
+                 L"B : retour / pause.\n"
+                 L"Manettes du Steam Frame : croix haut = recruter / renvoyer, gauche et droite = gestes (compliment, "
+                 L"provocation), bas = abandonner l'activité.  Bouton haut gauche = otage, bouton haut droit = arme "
+                 L"précédente.  View = vue suivante, Menu = carte.");
     default:
         return {};
     }

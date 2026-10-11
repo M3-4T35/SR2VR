@@ -35,6 +35,11 @@ void Remove();
 // vers le regard avant de poser les bras (0 = buste laissé à l'animation).
 void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3], float torsoMaxDegrees);
 
+// Appelée à chaque image du joueur juste avant de poser ses bras (thread de simulation), que
+// les bras suivent les manettes ou non : pour tout ce qui tourne ou déplace le personnage et
+// doit donc précéder la pose.
+void SetBeforePose(void (*fn)());
+
 // Arme blanche : inclinaison de la main vers l'avant, en degrés ([Melee] weapon_tilt)
 void SetMeleeTilt(float degrees);
 

@@ -666,6 +666,28 @@ bool g_handsAllowed = false; // première personne à pied, tête suivie : les b
 // ou 1 : pose « aim » la plus récente, départ = caméra, donc les yeux du personnage à la
 // première personne, plus l'écart manette - tête) ou celui du regard (hand -1). Thread de
 // simulation.
+// Les bras et les rayons de visée sont calculés pendant la mise à jour du personnage, avec la
+// caméra de l'image précédente ; celle de l'image en cours n'est connue qu'après. Quand on
+// tourne au stick, ce retard d'une image décale les bras de plusieurs degrés. On suppose donc
+// que la caméra tournera autant qu'à l'image précédente (rotation régulière) ; un saut (cran)
+// n'est pas prévu.
+float g_yawStep = 0.0f;   // lacet pris par la caméra du jeu à la dernière mise à jour (radians)
+float g_lastGameYaw = 0.0f;
+ULONGLONG g_lastGameYawTick = 0;
+
+void PredictGame(float game[9])
+{
+    const float step = g_yawStep;
+    if (step == 0.0f)
+        return;
+    const float c = std::cos(step), s = std::sin(step);
+    for (int row = 0; row < 3; ++row) {
+        const float vx = game[row * 3], vz = game[row * 3 + 2];
+        game[row * 3] = vx * c + vz * s;
+        game[row * 3 + 2] = vz * c - vx * s;
+    }
+}
+
 bool AimRay(int hand, float origin[3], float orient[9])
 {
     if (!g_aimAllowed || !g_pos)
@@ -678,6 +700,7 @@ bool AimRay(int hand, float origin[3], float orient[9])
             return false;
         memcpy(game, g_gameOrient, sizeof(game));
     }
+    PredictGame(game);
     memcpy(origin, g_pos, 3 * sizeof(float));
     float quat[4];
     if (hand < 0) {
@@ -712,6 +735,7 @@ bool HandFrame(int hand, float grip[3], float origin[3], float orient[9])
             return false;
         memcpy(game, g_gameOrient, sizeof(game));
     }
+    PredictGame(game);
     float quat[4], aimOffset[3], gripOffset[3];
     if (!xr::GetAimRay(hand, quat, aimOffset) || !xr::GetHandOffset(hand, gripOffset))
         return false;
@@ -805,6 +829,18 @@ void TurnBody(const float* headed)
 #endif
 }
 
+// Les bras sont posés pendant la mise à jour du personnage, avant celle de la caméra. Tourner
+// la racine après coup les emporterait : le corps est donc tourné juste avant leur pose, vers
+// le regard relevé à la mise à jour de caméra précédente.
+bool g_bodyWanted = false;
+float g_bodyHeaded[9]{};
+
+void BodyBeforePose()
+{
+    if (g_bodyWanted)
+        TurnBody(g_bodyHeaded);
+}
+
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -851,6 +887,18 @@ void __cdecl HkUpdateCamera()
     // Lacet de la caméra du jeu, pour la rotation par crans (mesure de ce que le jeu a tourné)
     if (state == kPlaying)
         input::actions::SetGameYaw(std::atan2(game[6], game[8]) * 57.29578f, !player::InVehicle());
+    {
+        // Rotation prise depuis la mise à jour précédente, pour prévoir la suivante (PredictGame)
+        const float yaw = std::atan2(game[6], game[8]);
+        float step = g_lastGameYawTick && now - g_lastGameYawTick < 200 ? yaw - g_lastGameYaw : 0.0f;
+        while (step > 3.14159265f)
+            step -= 6.2831853f;
+        while (step < -3.14159265f)
+            step += 6.2831853f;
+        g_yawStep = std::fabs(step) < 0.3f ? step : 0.0f; // au-delà de 17 degrés : un saut, pas une rotation
+        g_lastGameYaw = yaw;
+        g_lastGameYawTick = now;
+    }
     // La caméra de la simulation suit le regard : culling, son et sens de la marche
     const bool headed = tracked && s.headTracking && state == kPlaying;
     if (headed) {
@@ -917,10 +965,14 @@ void __cdecl HkUpdateCamera()
     if (g_meleeReady)
         melee::SetFrame(g_handsReady && g_handsAllowed && s.melee, s.meleeSpeed, s.gunBash);
     // Corps tourné vers le regard
-    if (s.bodyFollow && headed && firstPerson && !g_inVehicle)
-        TurnBody(g_written);
+    // (fait juste avant la pose des bras, à l'image suivante : voir BodyBeforePose)
+    g_bodyWanted = s.bodyFollow && headed && firstPerson && !g_inVehicle;
+    if (g_bodyWanted)
+        memcpy(g_bodyHeaded, g_written, sizeof(g_bodyHeaded));
     else
         g_bodyWrote = false;
+    if (g_bodyWanted && !g_handsReady)
+        TurnBody(g_bodyHeaded); // pas de passe des bras : on tourne ici
     // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
     const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
     if (shownView != g_lastFirstPerson && state == kPlaying) {
@@ -1339,6 +1391,8 @@ bool InstallCameraHook()
             LOG_ENGINE("table des objets introuvable dans UpdateCamera : vehicules non reconnus");
         g_hudReady = hud::Install();
         g_handsReady = hands::Install(&HandFrame);
+        if (g_handsReady)
+            hands::SetBeforePose(&BodyBeforePose);
         g_meleeReady = g_handsReady && melee::Install();
         g_aimReady = aim::Install(g_pos, g_orient, &AimRay);
         controls::Install();

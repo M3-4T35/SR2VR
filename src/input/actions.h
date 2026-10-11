@@ -11,7 +11,14 @@ namespace input::actions {
 enum Action {
     kTriggerLeft,  // gâchette gauche enfoncée
     kTriggerRight, // gâchette droite enfoncée
-    kReload,       // recharger / ramasser
+    kReload,       // recharger / ramasser une arme ou un objet (PICKUP_RELOAD)
+    kGrab,         // prendre un otage, le relâcher (GRAB)
+    kRecruit,      // recruter / renvoyer un membre du gang (RECRUIT_DISMISS)
+    kTauntOne,     // premier geste du personnage : compliment ou provocation (TAUNT_ONE)
+    kTauntTwo,     // second geste (TAUNT_TWO)
+    kCancel,       // abandonner l'activité en cours (CANCEL_ACTIVITY)
+    kMap,          // ouvrir la carte (MAP_MENU)
+    kSwap,         // reprendre l'arme précédente (FAST_WEAPON_SWITCH)
     kCount
 };
 

@@ -62,7 +62,20 @@ Patch g_patches[] = {
 
 // Numéros des commandes (table des noms du jeu : PICKUP_RELOAD, ATTACK_PRIMARY, ATTACK_SECONDARY ;
 // en véhicule FIREARM et, juste après, le tir secondaire)
-enum : int { kReload = 2, kAttackPrimary = 6, kAttackSecondary = 7, kVehicleFire = 0x1E, kVehicleFireSecondary = 0x1F };
+enum : int {
+    kFastSwitch = 1,
+    kReload = 2,
+    kAttackPrimary = 6,
+    kAttackSecondary = 7,
+    kTauntOne = 0x0E,
+    kTauntTwo = 0x0F,
+    kGrab = 0x12,
+    kVehicleFire = 0x1E,
+    kVehicleFireSecondary = 0x1F,
+    kRecruit = 0x2E,
+    kCancelActivity = 0x2F,
+    kMapMenu = 0x31,
+};
 
 using InputUpdateFn = void(__cdecl*)();
 InputUpdateFn g_inputUpdate = nullptr;
@@ -115,8 +128,13 @@ void Sample(input::actions::Action action, Trigger& trigger)
 void Press(int command)
 {
     const int slot = g_commands[command * (kCommandSize / sizeof(int))];
-    if (slot < 0 || slot >= g_slotCount)
+    if (slot < 0 || slot >= g_slotCount) {
+        if (!g_announced[command]) {
+            g_announced[command] = true;
+            LOG_ENGINE("commandes : la commande %d n'a pas de case d'entree dans le jeu (%d), elle reste sans effet", command, slot);
+        }
         return;
+    }
     float* value = reinterpret_cast<float*>(reinterpret_cast<uint8_t*>(g_slots) + static_cast<size_t>(slot) * kSlotSize);
     *value = 1.0f;
     if (!g_announced[command]) {
@@ -170,8 +188,25 @@ void Apply()
         Press(vehicle ? kVehicleFire : kAttackPrimary);
     if (left && !dual)
         Press(vehicle ? kVehicleFireSecondary : kAttackSecondary);
-    if (actions::Get(actions::kReload))
-        Press(kReload);
+    // Les autres commandes à pied : tenues tant que le bouton l'est. Un appui plus bref qu'une
+    // image de simulation est quand même vu une fois.
+    struct Simple {
+        actions::Action action;
+        int command;
+        bool footOnly;
+    };
+    static const Simple kSimple[] = {
+        {actions::kReload, kReload, false},        {actions::kGrab, kGrab, true},
+        {actions::kRecruit, kRecruit, true},       {actions::kTauntOne, kTauntOne, true},
+        {actions::kTauntTwo, kTauntTwo, true},     {actions::kCancel, kCancelActivity, false},
+        {actions::kMap, kMapMenu, false},          {actions::kSwap, kFastSwitch, true},
+    };
+    for (const Simple& simple : kSimple) {
+        const bool down = actions::Get(simple.action);
+        const bool tapped = actions::TakePresses(simple.action) > 0;
+        if ((down || tapped) && !(simple.footOnly && vehicle))
+            Press(simple.command);
+    }
 }
 
 bool WriteCode(uint8_t* at, const uint8_t* bytes, size_t size)

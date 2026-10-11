@@ -78,6 +78,7 @@ UpdatePoseFn g_updatePose = nullptr;
 void* g_muzzle = nullptr;
 void* g_target = nullptr;
 FrameFn g_frameFn = nullptr;
+void (*g_beforePose)() = nullptr;
 
 bool g_active = false;
 float g_eyeFromRoot[3]{};
@@ -831,8 +832,13 @@ bool __stdcall HkLimbTarget(uint8_t* limb, uint8_t* character, float* target)
 {
     if (limb && character && player::IsLocal(character)) {
         // Premier membre de la passe d'IK : c'est le moment de poser les bras
-        if (limb == character + kLimbTable)
+        if (limb == character + kLimbTable) {
+            // D'abord ce qui déplace le personnage lui-même (corps tourné vers le regard) : une
+            // racine tournée après la pose emporterait les bras avec elle
+            if (g_beforePose)
+                g_beforePose();
             PoseArmsGuarded(character);
+        }
         // Un bras qu'on vient de poser n'a plus de cible d'IK pour le jeu
         const unsigned index = limb[kLimbIndex];
         if (index <= 1 && g_posed[index])
@@ -904,6 +910,11 @@ void SetFrame(bool active, const float eyeFromRoot[3], const float headRight[3],
     memcpy(g_eyeFromRoot, eyeFromRoot, sizeof(g_eyeFromRoot));
     memcpy(g_headRight, headRight, sizeof(g_headRight));
     g_torsoMax = torsoMaxDegrees > 0.0f ? (torsoMaxDegrees > 180.0f ? 180.0f : torsoMaxDegrees) * 0.01745329f : 0.0f;
+}
+
+void SetBeforePose(void (*fn)())
+{
+    g_beforePose = fn;
 }
 
 void SetMeleeTilt(float degrees)

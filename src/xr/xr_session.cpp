@@ -30,6 +30,9 @@
 namespace xr {
 namespace {
 
+// Profil d'interaction des manettes du Steam Frame (SteamVR)
+constexpr char kFrameControllerExtension[] = "XR_VALVE_frame_controller_interaction";
+
 // Écran virtuel : largeur en mètres et distance devant l'utilisateur
 constexpr float kScreenWidth = 2.4f;
 constexpr float kScreenDistance = 2.0f;
@@ -306,21 +309,25 @@ bool XrApp::CreateInstance()
     }
     std::vector<XrExtensionProperties> exts(count, {XR_TYPE_EXTENSION_PROPERTIES});
     xrEnumerateInstanceExtensionProperties(nullptr, count, &count, exts.data());
-    bool hasD3D11 = false;
-    for (const auto& e : exts)
+    bool hasD3D11 = false, hasFrame = false;
+    for (const auto& e : exts) {
         hasD3D11 |= strcmp(e.extensionName, XR_KHR_D3D11_ENABLE_EXTENSION_NAME) == 0;
+        hasFrame |= strcmp(e.extensionName, kFrameControllerExtension) == 0;
+    }
     if (!hasD3D11) {
         if (!quietErrors_)
             LOG_XR("ERREUR : le runtime ne propose pas %s (%u extensions)", XR_KHR_D3D11_ENABLE_EXTENSION_NAME, count);
         return false;
     }
 
-    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME};
+    // Manettes du Steam Frame : leur profil d'interaction n'existe que si l'extension est activée
+    const char* enabled[] = {XR_KHR_D3D11_ENABLE_EXTENSION_NAME, kFrameControllerExtension};
+    input_.SetFrameProfile(hasFrame);
     XrInstanceCreateInfo ci{XR_TYPE_INSTANCE_CREATE_INFO};
     strcpy_s(ci.applicationInfo.applicationName, "SR2VR");
     strcpy_s(ci.applicationInfo.engineName, "Saints Row 2");
     ci.applicationInfo.apiVersion = XR_API_VERSION_1_0;
-    ci.enabledExtensionCount = 1;
+    ci.enabledExtensionCount = hasFrame ? 2 : 1;
     ci.enabledExtensionNames = enabled;
     {
         Phase p("xrCreateInstance");

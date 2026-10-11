@@ -93,6 +93,8 @@ constexpr float kWheelPoint = 0.6f;
 constexpr float kWheelRelease = 0.25f;
 // Après le relâchement du bouton, le stick reste pointé le temps que le jeu prenne l'arme
 constexpr ULONGLONG kWheelSettleMs = 200;
+// Clic du stick gauche tenu aussi longtemps sans rien choisir : changement de vue
+constexpr ULONGLONG kViewHoldMs = 700;
 
 void PublishAim(int hand, const XrPosef* pose, const XrPosef* head)
 {
@@ -134,6 +136,14 @@ enum {
     kReload,
     kLeftGripPose,
     kRightGripPose,
+    kGrab,
+    kRecruit,
+    kTauntOne,
+    kTauntTwo,
+    kCancel,
+    kMap,
+    kView,
+    kSwap,
     kActionCount
 };
 
@@ -149,6 +159,34 @@ struct Profile {
 
 // Seul le profil Touch est validé au casque (Quest 2 par SteamVR). Les autres suivent la
 // spécification OpenXR ; un profil refusé par le runtime est signalé dans le log.
+// Manettes du Steam Frame (extension XR_VALVE_frame_controller_interaction) : croix à gauche,
+// A B X Y à droite, un bouton haut (« bumper ») par main, « view » à gauche et « menu » à
+// droite. Sans ce profil, SteamVR les fait passer pour des Touch : B, X et Y ne font alors
+// qu'un, et la croix ne donne que deux boutons.
+const Profile kFrameProfile = {
+    "/interaction_profiles/valve/frame_controller_valve",
+    {{kLeftStick, "/user/hand/left/input/thumbstick"},
+     {kRightStick, "/user/hand/right/input/thumbstick"},
+     {kConfirm, "/user/hand/right/input/a/click"},
+     {kBack, "/user/hand/right/input/b/click"},
+     {kLeftTrigger, "/user/hand/left/input/trigger/value"},
+     {kRightTrigger, "/user/hand/right/input/trigger/value"},
+     {kRightGrip, "/user/hand/right/input/squeeze/value"},
+     {kRightGrip, "/user/hand/right/input/y/click"},
+     {kAimPose, "/user/hand/right/input/aim/pose"},
+     {kLeftClick, "/user/hand/left/input/thumbstick/click"},
+     {kRightClick, "/user/hand/right/input/thumbstick/click"},
+     {kLeftGrip, "/user/hand/left/input/squeeze/value"},
+     {kReload, "/user/hand/right/input/x/click"},
+     {kGrab, "/user/hand/left/input/bumper/click"},
+     {kRecruit, "/user/hand/left/input/dpad_up/click"},
+     {kTauntOne, "/user/hand/left/input/dpad_left/click"},
+     {kTauntTwo, "/user/hand/left/input/dpad_right/click"},
+     {kCancel, "/user/hand/left/input/dpad_down/click"},
+     {kMap, "/user/hand/right/input/menu/click"},
+     {kView, "/user/hand/left/input/view/click"},
+     {kSwap, "/user/hand/right/input/bumper/click"}}};
+
 const Profile kProfiles[] = {
     {"/interaction_profiles/oculus/touch_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
@@ -163,7 +201,8 @@ const Profile kProfiles[] = {
       {kLeftClick, "/user/hand/left/input/thumbstick/click"},
       {kRightClick, "/user/hand/right/input/thumbstick/click"},
       {kLeftGrip, "/user/hand/left/input/squeeze/value"},
-      {kReload, "/user/hand/left/input/x/click"}}},
+      {kReload, "/user/hand/left/input/x/click"},
+      {kRecruit, "/user/hand/left/input/y/click"}}},
     {"/interaction_profiles/valve/index_controller",
      {{kLeftStick, "/user/hand/left/input/thumbstick"},
       {kRightStick, "/user/hand/right/input/thumbstick"},
@@ -328,13 +367,21 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_trigger", "Maj", &rightTrigger_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_grip", "Interagir (E)", &rightGrip_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "aim_pose", "Viser (main droite)", &aimPose_) ||
-        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_click", "Changer de vue", &leftClick_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_click", "Nourriture et soins", &leftClick_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "right_click", "Roue des armes", &rightClick_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "left_grip", "Courir", &leftGrip_) ||
         !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "reload", "Recharger", &reload_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_aim_pose", "Viser (main gauche)", &leftAimPose_) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "left_grip_pose", "Main gauche", &gripPose_[0]) ||
         !CreateAction(set_, XR_ACTION_TYPE_POSE_INPUT, "right_grip_pose", "Main droite", &gripPose_[1]) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "grab", "Prendre un otage", &grab_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "recruit", "Recruter / renvoyer", &recruit_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "taunt_one", "Geste 1 (compliment / provocation)", &tauntOne_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "taunt_two", "Geste 2 (compliment / provocation)", &tauntTwo_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "cancel_activity", "Abandonner l'activite", &cancel_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "map", "Carte", &map_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "view", "Changer de vue", &view_) ||
+        !CreateAction(set_, XR_ACTION_TYPE_BOOLEAN_INPUT, "swap_weapon", "Arme precedente", &swap_) ||
         !CreateAction(set_, XR_ACTION_TYPE_VIBRATION_OUTPUT, "left_haptic", "Vibration gauche", &haptic_[0]) ||
         !CreateAction(set_, XR_ACTION_TYPE_VIBRATION_OUTPUT, "right_haptic", "Vibration droite", &haptic_[1])) {
         LOG_XR("ERREUR : actions des manettes non creees, manettes desactivees");
@@ -343,9 +390,16 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
 
     const XrAction actions[kActionCount] = {leftStick_, rightStick_, confirm_, back_, leftTrigger_, rightTrigger_,
                                             rightGrip_, aimPose_, leftClick_, rightClick_, leftGrip_, reload_,
-                                            gripPose_[0], gripPose_[1]};
+                                            gripPose_[0], gripPose_[1], grab_, recruit_, tauntOne_, tauntTwo_,
+                                            cancel_, map_, view_, swap_};
     int accepted = 0;
-    for (const Profile& profile : kProfiles) {
+    std::vector<const Profile*> profiles;
+    if (frameProfile_)
+        profiles.push_back(&kFrameProfile);
+    for (const Profile& known : kProfiles)
+        profiles.push_back(&known);
+    for (const Profile* each : profiles) {
+        const Profile& profile = *each;
         std::vector<XrActionSuggestedBinding> suggested;
         for (const Binding& b : profile.bindings)
             suggested.push_back({actions[b.action], ToPath(instance, b.path)});
@@ -392,6 +446,8 @@ bool MenuInput::Init(XrInstance instance, XrSession session)
         }
     }
     ready_ = true;
+    LOG_XR("manettes : profil des manettes du Steam Frame %s", frameProfile_ ? "propose (croix, X, Y, boutons hauts distincts)"
+                                                                            : "indisponible dans ce runtime");
     LOG_XR("manettes : %d profil(s) acceptes. Partie : stick gauche = deplacement, stick droit = tourner (%s, %.0f px/s), "
            "haut = sauter (position 0x%02X), bas = s'accroupir (position 0x%02X), poignee droite = E, gachette droite "
            "= tir, gachette gauche = attaque secondaire (tir avec deux armes), poignee gauche = courir, X = recharger "
@@ -602,60 +658,105 @@ void MenuInput::ReleaseAll()
 // et le stick gauche désigne l'arme, prise au relâchement du bouton. Ici : un clic du stick
 // droit l'ouvre, le stick droit désigne, et le laisser revenir au centre prend l'arme (ou un
 // second clic). Avec [Controls] wheel_toggle=0, la roue reste ouverte tant que le clic est tenu.
-void MenuInput::UpdateWheel(bool gameplay, bool click, float rx, float ry, ULONGLONG now)
+bool MenuInput::UpdateWheel(bool gameplay, bool click, bool foodClick, float lx, float ly, float rx, float ry,
+                            ULONGLONG now)
 {
     namespace vpad = input::vpad;
     const bool pressed = click && !rightClickHeld_;
+    const bool foodPressed = foodClick && !leftClickHeld_;
     rightClickHeld_ = click;
+    leftClickHeld_ = foodClick;
     if (!vpad::Ready()) {
         wheelOpen_ = false;
-        return;
+        return gameplay && foodPressed; // sans manette virtuelle, le clic gauche reste le changement de vue
     }
 
-    const float magnitude = std::sqrt(rx * rx + ry * ry);
+    bool viewCycle = false;
     bool close = false;
     if (!wheelOpen_) {
-        if (gameplay && !wheelCloseTick_ && (wheelToggle_ ? pressed : click)) {
+        const bool weapons = wheelToggle_ ? pressed : click;
+        const bool food = !weapons && (wheelToggle_ ? foodPressed : foodClick);
+        if (gameplay && !wheelCloseTick_ && (weapons || food)) {
             wheelOpen_ = true;
+            wheelFood_ = food;
             wheelPointed_ = false;
             wheelDir_[0] = wheelDir_[1] = 0.0f;
-            LOG_XR("manettes : roue des armes ouverte (bouton %d de la manette virtuelle)", wheelButton_);
+            wheelDpad_ = -1;
+            wheelOpenTick_ = now;
+            LOG_XR("manettes : roue %s ouverte (bouton %d de la manette virtuelle)", food ? "de la nourriture" : "des armes",
+                   wheelButton_);
         }
-    } else if (!gameplay) {
-        close = true; // pause, menu : on lâche tout
-    } else if (wheelToggle_) {
-        close = pressed || (wheelPointed_ && magnitude < kWheelRelease);
-    } else {
-        close = !click;
+    }
+    // Le stick de la roue ouverte : le droit pour les armes, le gauche pour la nourriture
+    const float sx = wheelFood_ ? lx : rx, sy = wheelFood_ ? ly : ry;
+    const float magnitude = std::sqrt(sx * sx + sy * sy);
+    const bool held = wheelFood_ ? foodClick : click;
+    const bool again = wheelFood_ ? foodPressed : pressed;
+    if (wheelOpen_ && wheelOpenTick_ != now) {
+        if (!held && wheelFood_)
+            wheelOpenTick_ = 1; // clic relâché : ce n'est plus un appui long
+        if (!gameplay) {
+            close = true; // pause, menu : on lâche tout
+        } else if (wheelToggle_) {
+            close = again || (wheelPointed_ && magnitude < kWheelRelease);
+            // Clic gauche tenu sans rien désigner : c'était un changement de vue
+            if (wheelFood_ && !wheelPointed_ && held && wheelOpenTick_ > 1 && now - wheelOpenTick_ > kViewHoldMs) {
+                close = true;
+                viewCycle = true;
+            }
+        } else {
+            close = !held;
+        }
     }
 
     if (wheelOpen_ && !close) {
         if (magnitude > kWheelPoint) {
             wheelPointed_ = true;
-            wheelDir_[0] = rx / magnitude;
-            wheelDir_[1] = ry / magnitude;
+            wheelDir_[0] = sx / magnitude;
+            wheelDir_[1] = sy / magnitude;
         }
         vpad::SetButton(wheelButton_, true);
-        // Stick droit -> stick gauche de la manette ; y vers le bas pour SDL. Tant qu'aucune
-        // arme n'est désignée, le stick suit la main ; ensuite il garde la dernière direction.
-        const float x = magnitude > kWheelRelease ? rx : wheelDir_[0];
-        const float y = magnitude > kWheelRelease ? ry : wheelDir_[1];
-        vpad::SetAxis(vpad::kLeftX, x);
-        vpad::SetAxis(vpad::kLeftY, -y);
+        if (wheelFood_) {
+            // Nourriture et soins : les quatre directions de la croix de la manette
+            if (magnitude > kWheelPoint) {
+                const int dpad = std::fabs(sy) >= std::fabs(sx) ? (sy > 0.0f ? vpad::kDpadUp : vpad::kDpadDown)
+                                                                : (sx > 0.0f ? vpad::kDpadRight : vpad::kDpadLeft);
+                if (dpad != wheelDpad_) {
+                    if (wheelDpad_ >= 0)
+                        vpad::SetButton(wheelDpad_, false);
+                    vpad::SetButton(dpad, true);
+                    wheelDpad_ = dpad;
+                }
+            }
+        } else {
+            // Stick droit -> stick gauche de la manette ; y vers le bas pour SDL. Tant qu'aucune
+            // arme n'est désignée, le stick suit la main ; ensuite il garde la dernière direction.
+            const float x = magnitude > kWheelRelease ? sx : wheelDir_[0];
+            const float y = magnitude > kWheelRelease ? sy : wheelDir_[1];
+            vpad::SetAxis(vpad::kLeftX, x);
+            vpad::SetAxis(vpad::kLeftY, -y);
+        }
     } else if (wheelOpen_) {
-        // Fermeture : bouton relâché, stick encore pointé un instant
+        // Fermeture : bouton relâché, stick (ou croix) encore pointé un instant
         wheelOpen_ = false;
-        wheelWaitCenter_ = true;
+        wheelWaitCenter_ = !wheelFood_;
         wheelCloseTick_ = now + kWheelSettleMs;
         vpad::SetButton(wheelButton_, false);
-        vpad::SetAxis(vpad::kLeftX, wheelDir_[0]);
-        vpad::SetAxis(vpad::kLeftY, -wheelDir_[1]);
-        LOG_XR("manettes : roue des armes fermee%s", wheelPointed_ ? "" : " sans choix");
+        if (!wheelFood_) {
+            vpad::SetAxis(vpad::kLeftX, wheelDir_[0]);
+            vpad::SetAxis(vpad::kLeftY, -wheelDir_[1]);
+        }
+        LOG_XR("manettes : roue %s fermee%s", wheelFood_ ? "de la nourriture" : "des armes",
+               viewCycle ? " (appui long : changement de vue)" : wheelPointed_ ? "" : " sans choix");
     } else if (wheelCloseTick_ && now >= wheelCloseTick_) {
         wheelCloseTick_ = 0;
         vpad::SetAxis(vpad::kLeftX, 0.0f);
         vpad::SetAxis(vpad::kLeftY, 0.0f);
+        if (wheelDpad_ >= 0)
+            vpad::SetButton(wheelDpad_, false);
+        wheelDpad_ = -1;
     }
+    return viewCycle;
 }
 
 void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime time, const XrPosef* head)
@@ -812,14 +913,26 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         firedLogged_ = true;
     }
 
-    // Clic du stick gauche : vue suivante (en partie seulement)
-    const bool leftClick = pressed(leftClick_);
-    if (leftClick && !leftClickHeld_ && gameplay)
-        ++g_viewCycleRequests;
-    leftClickHeld_ = leftClick;
+    // Commandes à pied posées dans le jeu : otage, recrutement, gestes, abandon, carte, arme précédente
+    const bool direct = fireMode == 0 && gameplay && !wheelOpen_;
+    actions::Set(actions::kGrab, direct && pressed(grab_));
+    actions::Set(actions::kRecruit, direct && pressed(recruit_));
+    actions::Set(actions::kTauntOne, direct && pressed(tauntOne_));
+    actions::Set(actions::kTauntTwo, direct && pressed(tauntTwo_));
+    actions::Set(actions::kCancel, direct && pressed(cancel_));
+    actions::Set(actions::kMap, direct && pressed(map_));
+    actions::Set(actions::kSwap, direct && pressed(swap_));
 
-    // Roue des armes : tant qu'elle est ouverte, les sticks ne servent qu'à elle
-    UpdateWheel(gameplay, pressed(rightClick_), rx, ry, now);
+    // Roues : clic du stick droit = armes (choisies au stick droit), clic du stick gauche =
+    // nourriture et soins (choisis au stick gauche). Tant qu'une roue est ouverte, les sticks
+    // ne servent qu'à elle. Vue suivante : bouton « view », ou clic gauche tenu.
+    bool viewCycle = UpdateWheel(gameplay, pressed(rightClick_), pressed(leftClick_), lx, ly, rx, ry, now);
+    const bool viewButton = pressed(view_);
+    if (viewButton && !viewHeld_ && gameplay)
+        viewCycle = true;
+    viewHeld_ = viewButton;
+    if (viewCycle)
+        ++g_viewCycleRequests;
     if (wheelOpen_) {
         lx = ly = rx = ry = 0.0f;
     } else if (wheelWaitCenter_) {

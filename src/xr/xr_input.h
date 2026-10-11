@@ -57,6 +57,8 @@ public:
     // Crée les actions et les attache à la session (une seule fois par session). false :
     // manettes indisponibles, le reste de la VR continue.
     bool Init(XrInstance instance, XrSession session);
+    // Avant Init : le runtime connaît le profil des manettes du Steam Frame (extension activée)
+    void SetFrameProfile(bool available) { frameProfile_ = available; }
     // À chaque image du thread XR. focused : la session a le focus des entrées. base, time :
     // espace et instant d'affichage pour situer les manettes. head : pose de la tête dans le
     // même espace, nullptr si elle n'est pas suivie.
@@ -103,6 +105,17 @@ private:
     XrVector3f gripLast_[2]{};
     bool gripSeen_[2]{};
     XrAction haptic_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // vibration, gauche et droite
+    // Commandes à pied posées dans le jeu : otage, recrutement, gestes, abandon, carte, arme précédente
+    XrAction grab_ = XR_NULL_HANDLE;
+    XrAction recruit_ = XR_NULL_HANDLE;
+    XrAction tauntOne_ = XR_NULL_HANDLE;
+    XrAction tauntTwo_ = XR_NULL_HANDLE;
+    XrAction cancel_ = XR_NULL_HANDLE;
+    XrAction map_ = XR_NULL_HANDLE;
+    XrAction view_ = XR_NULL_HANDLE;
+    XrAction swap_ = XR_NULL_HANDLE;
+    bool frameProfile_ = false;
+    bool viewHeld_ = false;
     bool ready_ = false;
     bool announced_ = false;
     int gameplayShown_ = -1; // dernier mode annoncé dans le log (0 menus, 1 partie)
@@ -126,8 +139,14 @@ private:
     Key crouch_;
 
     // Roue des armes, par la manette virtuelle
-    void UpdateWheel(bool gameplay, bool click, float rx, float ry, ULONGLONG now);
+    // click : clic du stick droit (armes) ; foodClick : clic du stick gauche (nourriture et
+    // soins, choisis au stick gauche par la croix de la manette virtuelle). Renvoie true quand
+    // la roue de la nourriture, tenue sans rien choisir, vaut un changement de vue.
+    bool UpdateWheel(bool gameplay, bool click, bool foodClick, float lx, float ly, float rx, float ry, ULONGLONG now);
     bool wheelOpen_ = false;
+    bool wheelFood_ = false;         // la roue ouverte est celle de la nourriture
+    int wheelDpad_ = -1;             // croix tenue : bouton de la manette virtuelle, -1 aucune
+    ULONGLONG wheelOpenTick_ = 0;
     bool wheelPointed_ = false;      // le stick a désigné une arme depuis l'ouverture
     float wheelDir_[2]{};            // dernière direction désignée (x droite, y haut)
     ULONGLONG wheelCloseTick_ = 0;   // bouton relâché : le stick reste pointé jusque-là

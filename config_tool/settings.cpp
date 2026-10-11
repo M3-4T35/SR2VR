@@ -112,6 +112,12 @@ const Definition kDefs[] = {
       L"Vue devant le pare-brise : hauteur au-dessus de la tête du conducteur."}},
 
     // --- Contrôles ---
+    {L"Controls", L"layout", kTabControls, {L"Button layout", L"Disposition des boutons"}, Kind::Choice, 0, 0, 2, 0,
+     {L"Automatic|Steam Frame|Quest 2 (Touch)", L"Automatique|Steam Frame|Quest 2 (Touch)"},
+     {L"Automatic: Steam Frame layout with its controllers, Quest 2 layout with the others. Quest 2 also works on "
+      L"Steam Frame controllers (A, B, X, Y only). Applied at once, even while playing.",
+      L"Automatique : disposition Steam Frame avec ses manettes, Quest 2 avec les autres. Quest 2 marche aussi sur "
+      L"les manettes du Steam Frame (A, B, X, Y seulement). Appliqué tout de suite, même en cours de partie."}},
     {L"Controls", L"turn_mode", kTabControls, {L"Turning with the right stick", L"Rotation au stick droit"},
      Kind::Choice, 0, 0, 1, 0, {L"Smooth|Snap", L"Continue|Par crans"},
      {L"Smooth: the view turns while the stick is pushed. Snap: one step per push, more comfortable.",

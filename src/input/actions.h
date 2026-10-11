@@ -18,7 +18,6 @@ enum Action {
     kTauntTwo,     // second geste (TAUNT_TWO)
     kCancel,       // abandonner l'activité en cours (CANCEL_ACTIVITY)
     kMap,          // ouvrir la carte (MAP_MENU)
-    kSwap,         // reprendre l'arme précédente (FAST_WEAPON_SWITCH)
     kCount
 };
 

@@ -149,19 +149,37 @@ std::wstring TabNote(int tab)
                  L"while playing: the sticks go through the keyboard and the mouse.",
                  L"Mettez le casque et lancez SteamVR avant de cliquer sur JOUER. Gardez la fenêtre du jeu au premier "
                  L"plan pendant la partie : les sticks passent par le clavier et la souris.");
-    case settings::kTabControls:
-        return T(L"Left stick: move (click: food and health, chosen with the stick; held click: next view).  Right stick: "
-                 L"turn, up = jump, down = crouch (click: weapon wheel).  Triggers: fire.  Right grip or Y: action.  Left "
-                 L"grip: sprint.  X: reload / pick up.  A: confirm.  B: back / pause.\n"
-                 L"Steam Frame controllers: D-pad up = recruit / dismiss, left and right = taunts, down = cancel activity.  "
-                 L"Left top button = human shield, right top button = previous weapon.  View = next view, Menu = map.",
-                 L"Stick gauche : déplacement (clic : nourriture et soins, choisis au stick ; clic tenu : vue suivante).  "
-                 L"Stick droit : tourner, haut = sauter, bas = s'accroupir (clic : roue des armes).  Gâchettes : tir.  "
-                 L"Poignée droite ou Y : action.  Poignée gauche : courir.  X : recharger / ramasser.  A : valider.  "
-                 L"B : retour / pause.\n"
-                 L"Manettes du Steam Frame : croix haut = recruter / renvoyer, gauche et droite = gestes (compliment, "
-                 L"provocation), bas = abandonner l'activité.  Bouton haut gauche = otage, bouton haut droit = arme "
-                 L"précédente.  View = vue suivante, Menu = carte.");
+    case settings::kTabControls: {
+        const std::wstring common =
+            T(L"Both layouts.  Left stick: move (click: food and health, chosen with the stick; held click: next view).  "
+              L"Right stick: turn, up = jump, down = crouch (click: weapon wheel).  Triggers: each hand fires.  Right "
+              L"grip: action.  Left grip: sprint.  X: reload / pick up.  In menus: A = confirm, B = back.",
+              L"Les deux dispositions.  Stick gauche : déplacement (clic : nourriture et soins, choisis au stick ; clic "
+              L"tenu : vue suivante).  Stick droit : tourner, haut = sauter, bas = s'accroupir (clic : roue des armes).  "
+              L"Gâchettes : chaque main tire.  Poignée droite : action.  Poignée gauche : courir.  X : recharger / "
+              L"ramasser.  Dans les menus : A = valider, B = retour.");
+        const std::wstring frame =
+            T(L"Steam Frame (like a gamepad).  A: sprint.  B: weapon wheel.  Y: action.  Option: pause menu.  View: map.  "
+              L"D-pad up: recruit / dismiss, left and right: taunt and compliment, down: cancel activity.  Left top "
+              L"button: human shield.  Right top button: jump.",
+              L"Steam Frame (comme une manette).  A : courir.  B : roue des armes.  Y : action.  Option : menu pause.  "
+              L"View : carte.  Croix haut : recruter / renvoyer, gauche et droite : provocation et compliment, bas : "
+              L"abandonner l'activité.  Bouton haut gauche : otage.  Bouton haut droit : sauter.");
+        const std::wstring quest =
+            T(L"Quest 2 (Touch).  Y: recruit / dismiss.  A short press: human shield, A held: map.  B short press: "
+              L"taunt, B held: cancel activity.  Menu button: pause menu.",
+              L"Quest 2 (Touch).  Y : recruter / renvoyer.  A appui court : otage, A tenu : carte.  B appui court : "
+              L"geste (provocation), B tenu : abandonner l'activité.  Bouton menu : menu pause.");
+        int layout = 0;
+        for (int i = 0; i < settings::Count(); ++i)
+            if (!wcscmp(settings::Def(i).section, L"Controls") && !wcscmp(settings::Def(i).key, L"layout"))
+                layout = static_cast<int>(settings::Get(i));
+        if (layout == 1)
+            return common + L"\n" + frame;
+        if (layout == 2)
+            return common + L"\n" + quest;
+        return common + L"\n" + frame + L"\n" + quest;
+    }
     default:
         return {};
     }

@@ -13,7 +13,7 @@
 //   gâchette gauche                  -> attaque secondaire ; avec une arme dans chaque main,
 //                                       elle tire aussi et c'est la main gauche qui vise
 //   poignée gauche                   -> courir (Maj, tenue)
-//   X (manette gauche)               -> recharger / ramasser
+//   X                                -> recharger / ramasser
 //   clic du stick droit              -> roue des armes : elle s'ouvre, le stick droit choisit
 //                                       l'arme, le relâcher la prend (manette virtuelle :
 //                                       bouton B tenu, stick droit envoyé comme stick gauche)
@@ -22,9 +22,15 @@
 // Dans les menus (pause, menu principal, garde-robe, garage, boutiques) :
 //   stick gauche ou droit            -> flèches, avec répétition tant qu'il est tenu
 //   gâchette gauche / droite         -> Ctrl / Maj (tenues), pour les onglets des menus
-// Partout :
-//   A                                -> Entrée
-//   B, ou bouton menu de la gauche   -> Échap
+//   A -> Entrée ; B, menu (« option » du Steam Frame) ou view -> Échap
+// Partout : le bouton menu -> Échap (pause en partie).
+// Les autres boutons, en partie, selon la disposition ([Controls] layout : 0 selon les manettes
+// tenues, 1 Steam Frame, 2 Quest 2) :
+//   Steam Frame (comme une manette classique) : A courir, B roue des armes, Y action (E),
+//     view carte, croix haut recruter / renvoyer, gauche et droite gestes, bas abandonner
+//     l'activité, bouton haut gauche otage, bouton haut droit sauter
+//   Quest 2 (Touch) : Y recruter / renvoyer, A court otage, A long carte, B court geste,
+//     B long abandonner l'activité
 #define XR_USE_GRAPHICS_API_D3D11
 #define XR_USE_PLATFORM_WIN32
 #include <windows.h>
@@ -85,8 +91,15 @@ private:
     XrActionSet set_ = XR_NULL_HANDLE;
     XrAction leftStick_ = XR_NULL_HANDLE;
     XrAction rightStick_ = XR_NULL_HANDLE;
-    XrAction confirm_ = XR_NULL_HANDLE;
-    XrAction back_ = XR_NULL_HANDLE;
+    // Boutons, liés pour ce qu'ils sont ; leur rôle en partie dépend de la disposition
+    XrAction btnA_ = XR_NULL_HANDLE;
+    XrAction btnB_ = XR_NULL_HANDLE;
+    XrAction btnX_ = XR_NULL_HANDLE;
+    XrAction btnY_ = XR_NULL_HANDLE;
+    XrAction btnMenu_ = XR_NULL_HANDLE; // menu gauche (Touch) ou « option » à droite (Steam Frame)
+    XrAction btnView_ = XR_NULL_HANDLE; // Steam Frame seulement
+    XrAction dpad_[4]{XR_NULL_HANDLE, XR_NULL_HANDLE, XR_NULL_HANDLE, XR_NULL_HANDLE}; // haut, bas, gauche, droite
+    XrAction bumper_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE};                               // gauche, droite
     XrAction leftTrigger_ = XR_NULL_HANDLE;
     XrAction rightTrigger_ = XR_NULL_HANDLE;
     XrAction rightGrip_ = XR_NULL_HANDLE;
@@ -95,7 +108,6 @@ private:
     XrAction leftClick_ = XR_NULL_HANDLE;
     XrAction rightClick_ = XR_NULL_HANDLE;
     XrAction leftGrip_ = XR_NULL_HANDLE;
-    XrAction reload_ = XR_NULL_HANDLE;
     XrSpace aimSpace_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // gauche, droite
     XrPosef aimPoseLocal_[2]{};
     bool aimPoseValid_[2]{};
@@ -105,17 +117,31 @@ private:
     XrVector3f gripLast_[2]{};
     bool gripSeen_[2]{};
     XrAction haptic_[2]{XR_NULL_HANDLE, XR_NULL_HANDLE}; // vibration, gauche et droite
-    // Commandes à pied posées dans le jeu : otage, recrutement, gestes, abandon, carte, arme précédente
-    XrAction grab_ = XR_NULL_HANDLE;
-    XrAction recruit_ = XR_NULL_HANDLE;
-    XrAction tauntOne_ = XR_NULL_HANDLE;
-    XrAction tauntTwo_ = XR_NULL_HANDLE;
-    XrAction cancel_ = XR_NULL_HANDLE;
-    XrAction map_ = XR_NULL_HANDLE;
-    XrAction view_ = XR_NULL_HANDLE;
-    XrAction swap_ = XR_NULL_HANDLE;
     bool frameProfile_ = false;
-    bool viewHeld_ = false;
+    // Disposition des boutons en partie ([Controls] layout) : 0 selon les manettes, 1 Steam Frame
+    // (proche d'une manette classique), 2 Quest 2 (Touch : moins de boutons, appuis courts et longs)
+    int layout_ = 0;
+    bool frameLayout_ = false;   // disposition Steam Frame en vigueur
+    int layoutShown_ = -1;
+    XrPath framePath_ = XR_NULL_PATH;
+    XrPath rightHandPath_ = XR_NULL_PATH;
+    ULONGLONG lastProfileCheck_ = 0;
+    // Appui court / appui long d'un bouton (disposition Quest 2)
+    struct Hold {
+        bool down = false;
+        bool fired = false;
+        ULONGLONG since = 0;
+    };
+    int ShortLong(Hold& hold, bool down, ULONGLONG now); // 1 : appui court relâché, 2 : appui long atteint
+    Hold holdA_, holdB_;
+    // Boutons : enfoncé, et mode (partie ou menus) au moment de l'appui. Un bouton n'agit que
+    // dans le mode où il a été enfoncé : celui qui ferme un menu n'agit pas dans la partie qui
+    // reprend, celui qui ouvre la carte ne la referme pas aussitôt.
+    enum Button { kA, kB, kX, kY, kMenu, kView, kUp, kDown, kLeft, kRight, kBumperLeft, kBumperRight, kButtonCount };
+    bool buttonDown_[kButtonCount]{};
+    bool buttonGame_[kButtonCount]{};
+    ULONGLONG pulse_[16]{};      // commandes du jeu tenues jusqu'à cet instant (un appui bref)
+    bool stickJump_ = false;     // saut commandé au stick droit (bloque la rotation)
     bool ready_ = false;
     bool announced_ = false;
     int gameplayShown_ = -1; // dernier mode annoncé dans le log (0 menus, 1 partie)

@@ -199,7 +199,7 @@ void Apply()
         {actions::kReload, kReload, false},        {actions::kGrab, kGrab, true},
         {actions::kRecruit, kRecruit, true},       {actions::kTauntOne, kTauntOne, true},
         {actions::kTauntTwo, kTauntTwo, true},     {actions::kCancel, kCancelActivity, false},
-        {actions::kMap, kMapMenu, false},          {actions::kSwap, kFastSwitch, true},
+        {actions::kMap, kMapMenu, false},
     };
     for (const Simple& simple : kSimple) {
         const bool down = actions::Get(simple.action);

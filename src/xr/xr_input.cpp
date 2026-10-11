@@ -926,6 +926,7 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
                                XR_SUCCEEDED(xrGetCurrentInteractionProfile(session, rightHandPath_, &profile)) &&
                                profile.interactionProfile == framePath_;
         frameLayout_ = frameHeld && layout_ != 2;
+        input::actions::SetFrameLayout(frameLayout_);
         const int shown = (frameLayout_ ? 1 : 0) | (frameHeld ? 2 : 0) | (layout_ << 2);
         if (shown != layoutShown_) {
             layoutShown_ = shown;

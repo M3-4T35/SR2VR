@@ -11,6 +11,7 @@ std::atomic<bool> g_down[kCount]{};
 std::atomic<unsigned> g_presses[kCount]{};
 std::atomic<bool> g_direct{false};
 std::atomic<bool> g_dual{false};
+std::atomic<bool> g_frameLayout{false};
 std::atomic<float> g_yaw{0.0f};
 std::atomic<bool> g_yawSteady{false};
 std::atomic<unsigned> g_yawSequence{0};
@@ -59,6 +60,16 @@ void SetDirect(bool ready)
 bool Direct()
 {
     return g_direct;
+}
+
+void SetFrameLayout(bool frame)
+{
+    g_frameLayout = frame;
+}
+
+bool FrameLayout()
+{
+    return g_frameLayout;
 }
 
 void SetDualWield(bool dual)

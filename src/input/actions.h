@@ -38,6 +38,11 @@ unsigned TakePresses(Action action);
 void SetDirect(bool ready);
 bool Direct();
 
+// Disposition des boutons en vigueur : true celle du Steam Frame, false celle du Quest 2 (dit par
+// le thread XR, lu par les messages du jeu pour nommer le bon bouton)
+void SetFrameLayout(bool frame);
+bool FrameLayout();
+
 // Le personnage tient une arme dans chaque main (dit par le moteur à chaque image)
 void SetDualWield(bool dual);
 bool DualWield();

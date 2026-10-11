@@ -29,6 +29,9 @@ void Remove();
 // Pris en compte à l'image de simulation suivante ; l'état d'origine est rendu sinon.
 void SetCrouchHold(bool hold);
 
+// Case d'entrée (0 à 86) que le jeu lit pour une commande, -1 si elle n'en a pas ou avant Install
+int SlotOf(int command);
+
 // Main qui vise pour le haut du corps : 1 droite, 0 gauche (seulement à pied avec une arme dans
 // chaque main, quand la gauche a tiré en dernier). Thread de simulation.
 int AimHand();

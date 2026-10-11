@@ -118,6 +118,12 @@ const Definition kDefs[] = {
       L"Steam Frame controllers (A, B, X, Y only). Applied at once, even while playing.",
       L"Automatique : disposition Steam Frame avec ses manettes, Quest 2 avec les autres. Quest 2 marche aussi sur "
       L"les manettes du Steam Frame (A, B, X, Y seulement). Appliqué tout de suite, même en cours de partie."}},
+    {L"Hud", L"prompts", kTabControls, {L"Game messages show", L"Les messages du jeu montrent"}, Kind::Choice, 1, 0, 2, 0,
+     {L"Keyboard keys|Controller buttons|Controller buttons (pad drawings, trial)",
+      L"Les touches du clavier|Les boutons des manettes|Les boutons (dessins de manette, essai)"},
+     {L"\"Press ... to enter\": the game names the VR controller button for the chosen layout instead of the keyboard key.",
+      L"« Appuyez sur ... pour entrer » : le jeu nomme le bouton de la manette VR, selon la disposition choisie, au lieu "
+      L"de la touche du clavier."}},
     {L"Controls", L"turn_mode", kTabControls, {L"Turning with the right stick", L"Rotation au stick droit"},
      Kind::Choice, 0, 0, 1, 0, {L"Smooth|Snap", L"Continue|Par crans"},
      {L"Smooth: the view turns while the stick is pushed. Snap: one step per push, more comfortable.",

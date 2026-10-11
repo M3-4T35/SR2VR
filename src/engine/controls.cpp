@@ -356,6 +356,14 @@ void Remove()
     }
 }
 
+int SlotOf(int command)
+{
+    if (!g_commands || command < 0 || command >= kCommandCount)
+        return -1;
+    const int slot = g_commands[command * (kCommandSize / sizeof(int))];
+    return slot >= 0 && slot < g_slotCount ? slot : -1;
+}
+
 int AimHand()
 {
     return g_aimHand;

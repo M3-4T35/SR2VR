@@ -74,6 +74,7 @@
 #include "engine/hud.h"
 #include "engine/melee.h"
 #include "engine/player.h"
+#include "engine/prompts.h"
 #include "input/actions.h"
 #include "util/config.h"
 #include "util/log.h"
@@ -1396,6 +1397,7 @@ bool InstallCameraHook()
         g_meleeReady = g_handsReady && melee::Install();
         g_aimReady = aim::Install(g_pos, g_orient, &AimRay);
         controls::Install();
+        prompts::Install();
         LOG_ENGINE("mode de camera du jeu : %s", g_cameraMode ? "trouve" : "introuvable (premiere personne dans tous les modes)");
     }
 
@@ -1423,6 +1425,7 @@ void RemoveCameraHook()
     hands::Remove();
     melee::Remove();
     aim::Remove();
+    prompts::Remove();
     controls::Remove();
     g_aimReady = false;
     if (g_applied && g_orient)

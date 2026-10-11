@@ -25,6 +25,7 @@ constexpr ULONGLONG kRepeatPeriodMs = 130;
 constexpr float kMoveEngage = 0.45f;
 constexpr float kMoveRelease = 0.3f;
 constexpr float kTurnDeadzone = 0.15f;
+constexpr float kCrouchTurnDeadzone = 0.45f; // en tenant le stick vers le bas pour rester accroupi
 // Rotation par crans : un cran quand le stick dépasse 0,6, réarmé quand il repasse sous 0,3
 constexpr float kSnapEngage = 0.6f;
 constexpr float kSnapRelease = 0.3f;
@@ -291,6 +292,7 @@ void MenuInput::ReadConfig()
     if (wheelButton_ < 0 || wheelButton_ >= input::vpad::kButtonCount)
         wheelButton_ = input::vpad::kEast;
     wheelToggle_ = config::Int("Controls", "wheel_toggle", 1) != 0;
+    crouchHold_ = config::Int("Controls", "crouch_hold", 1) != 0;
     fireMode_ = config::Int("Controls", "fire_mode", 0);
     if (fireMode_ < 0 || fireMode_ > 2)
         fireMode_ = 0;
@@ -590,6 +592,7 @@ void MenuInput::ReleaseAll()
         gripSeen_[hand] = false;
         input::actions::ReportHandSpeed(hand, -1.0f);
     }
+    input::actions::SetMoveStick(0.0f, 0.0f);
     wheelOpen_ = false;
     wheelCloseTick_ = 0;
     input::vpad::Reset();
@@ -836,6 +839,7 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
 
         // Déplacement : chaque direction a sa touche, avec hystérésis ; les diagonales sont permises
         const float axis[4] = {ly, -ly, -lx, lx}; // avant, arrière, gauche, droite
+        input::actions::SetMoveStick(lx, ly);
         for (int i = 0; i < 4; ++i)
             SetKey(move_[i], axis[i] > (move_[i].held ? kMoveRelease : kMoveEngage), false);
 
@@ -848,11 +852,15 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
 
         // Tourner : la souris se déplace à l'horizontale, proportionnellement au stick. Pas
         // pendant un saut ou un accroupissement commandé au stick, qui dévie toujours un peu.
+        // Accroupi en tenant le stick vers le bas : il reste possible de tourner en l'inclinant
+        // franchement de côté (zone morte élargie, le stick tenu n'est jamais bien droit).
         float turn = 0.0f;
+        const bool crouchTurn = crouchHold_ && crouch_.held;
+        const float deadzone = crouchTurn ? kCrouchTurnDeadzone : kTurnDeadzone;
         if (turnMode_ == 1)
-            UpdateSnap(rx, ry, jump_.held || crouch_.held, now);
-        else if (!jump_.held && !crouch_.held && std::fabs(rx) > kTurnDeadzone)
-            turn = (rx - (rx > 0.0f ? kTurnDeadzone : -kTurnDeadzone)) / (1.0f - kTurnDeadzone);
+            UpdateSnap(rx, crouchTurn ? 0.0f : ry, jump_.held || (crouch_.held && !crouchTurn), now);
+        else if (!jump_.held && (!crouch_.held || crouchTurn) && std::fabs(rx) > deadzone)
+            turn = (rx - (rx > 0.0f ? deadzone : -deadzone)) / (1.0f - deadzone);
         if (turnMode_ != 1)
             snap_.active = false;
         turnRemainder_ += turn * turnSpeed_ * dt;
@@ -872,6 +880,7 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         SetKey(interact_, false, false);
         SetKey(jump_, false, false);
         SetKey(crouch_, false, false);
+        input::actions::SetMoveStick(0.0f, 0.0f);
         turnRemainder_ = 0.0f;
         snap_.active = false;
         snapArmed_ = false; // un stick incliné dans un menu ne fait pas tourner au retour en partie

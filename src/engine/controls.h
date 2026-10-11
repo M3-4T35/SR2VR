@@ -25,6 +25,10 @@ namespace engine::controls {
 bool Install();
 void Remove();
 
+// S'accroupir tant que la commande est tenue (le mode « maintenu » du jeu) au lieu de la bascule.
+// Pris en compte à l'image de simulation suivante ; l'état d'origine est rendu sinon.
+void SetCrouchHold(bool hold);
+
 // Main qui vise pour le haut du corps : 1 droite, 0 gauche (seulement à pied avec une arme dans
 // chaque main, quand la gauche a tiré en dernier). Thread de simulation.
 int AimHand();

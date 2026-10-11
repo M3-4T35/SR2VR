@@ -185,9 +185,37 @@ bool WriteCode(uint8_t* at, const uint8_t* bytes, size_t size)
     return true;
 }
 
+// Réglages de pilotage du jeu (un octet de drapeaux) : bit 0 = s'accroupir par bascule. Le bit
+// mis à 0, le jeu accroupit le personnage tant que la commande est tenue et le relève quand
+// elle est relâchée (c'est son propre mode « maintenu », lu par le pilotage à pied).
+constexpr char kCrouchOptionSig[] =
+    "F6 05 ?? ?? ?? ?? 01 0F 84 ?? ?? ?? ?? F7 45 00 00 80 00 00 0F 84 ?? ?? ?? ?? B9 11 00 00 00";
+uint8_t* g_options = nullptr;
+bool g_crouchHold = false;    // demandé par [Controls] crouch_hold
+bool g_crouchChanged = false; // nous avons retiré la bascule : à rendre
+
+void ApplyCrouchOption()
+{
+    if (!g_options)
+        return;
+    if (g_crouchHold) {
+        if (*g_options & 1) {
+            *g_options &= static_cast<uint8_t>(~1);
+            if (!g_crouchChanged)
+                LOG_ENGINE("commandes : accroupissement maintenu (bascule du jeu retiree en memoire)");
+            g_crouchChanged = true;
+        }
+    } else if (g_crouchChanged) {
+        *g_options |= 1;
+        g_crouchChanged = false;
+        LOG_ENGINE("commandes : accroupissement par bascule, comme dans le jeu");
+    }
+}
+
 void __cdecl HkInputUpdate()
 {
     g_inputUpdate();
+    ApplyCrouchOption();
 #if defined(_MSC_VER) && !defined(__clang__)
     __try {
         Apply();
@@ -257,6 +285,8 @@ bool Install()
             ++applied;
         }
     }
+    if (auto* option = static_cast<uint8_t*>(pattern::Find("reglages de pilotage du jeu", kCrouchOptionSig)))
+        memcpy(&g_options, option + 2, sizeof(g_options));
     const int wanted = static_cast<int>(sizeof(g_patches) / sizeof(g_patches[0]));
     LOG_ENGINE("commandes : tir a deux armes, %d modification(s) sur %d posee(s)%s", applied, wanted,
                applied == wanted ? " : chaque gachette tire avec son arme, quelle que soit l'arme"
@@ -269,9 +299,16 @@ bool Install()
     return true;
 }
 
+void SetCrouchHold(bool hold)
+{
+    g_crouchHold = hold;
+}
+
 void Remove()
 {
     input::actions::SetDirect(false);
+    g_crouchHold = false;
+    ApplyCrouchOption();
     for (Patch& patch : g_patches) {
         if (patch.site)
             WriteCode(patch.site, patch.saved, static_cast<size_t>(patch.size));

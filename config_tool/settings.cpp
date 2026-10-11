@@ -81,6 +81,12 @@ const Definition kDefs[] = {
      0, kNone,
      {L"Camera at the character's eyes. Off: the game's third-person camera.",
       L"Caméra aux yeux du personnage. Désactivé : caméra du jeu, à la troisième personne."}},
+    {L"FirstPerson", L"body_follow", kTabView, {L"Body turns towards where you look", L"Le corps se tourne vers le regard"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"On foot, standing or walking forward: the character (and its arrow on the minimap) turns to face where "
+      L"you look. Off: it only turns towards where it walks, as in the game.",
+      L"À pied, sur place ou en avançant : le personnage (et sa flèche sur la mini-carte) se tourne vers là où vous "
+      L"regardez. Désactivé : il ne se tourne que vers là où il marche, comme dans le jeu."}},
     {L"FirstPerson", L"forward", kTabView, {L"Eyes: forward (m)", L"Yeux : vers l'avant (m)"}, Kind::Float, 0.12f,
      -0.3f, 0.5f, 0.01f, kNone,
      {L"Moves the camera forward from the centre of the head. Increase if you see the inside of the face.",
@@ -119,6 +125,12 @@ const Definition kDefs[] = {
       L"set in the game).",
       L"Vitesse stick à fond, en pixels de souris par seconde (elle dépend aussi de la sensibilité de la souris "
       L"réglée dans le jeu)."}},
+    {L"Controls", L"crouch_hold", kTabControls, {L"Crouch while the stick is held down", L"Accroupi tant que le stick est tenu en bas"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"On: the character crouches while the right stick is held down and stands up when it is released. Off: "
+      L"pushing the stick down toggles crouching, as in the game.",
+      L"Activé : le personnage s'accroupit tant que le stick droit est tenu vers le bas et se relève quand il est "
+      L"relâché. Désactivé : pousser le stick vers le bas bascule l'accroupissement, comme dans le jeu."}},
     {L"Controls", L"wheel_toggle", kTabControls, {L"Weapon wheel: one click opens it", L"Roue des armes : un clic l'ouvre"},
      Kind::Bool, 1, 0, 1, 0, kNone,
      {L"On: click the right stick, choose with the stick, release it to take the weapon. Off: hold the click "
@@ -163,6 +175,11 @@ const Definition kDefs[] = {
      {L"Speed of the hand from which a move counts as a hit. Lower: hits land more easily, also by accident.",
       L"Vitesse de la main à partir de laquelle un geste est un coup. Plus bas : les coups partent plus facilement, "
       L"y compris sans le vouloir."}},
+    {L"Melee", L"gun_bash", kTabHands, {L"Gun bash with a fast move", L"Coup de crosse au geste"}, Kind::Bool, 1, 0, 1, 0,
+     kNone,
+     {L"A fast move of a hand holding a firearm hits with it (it needs a slightly faster move than a punch).",
+      L"Un geste rapide d'une main qui tient une arme à feu donne un coup de crosse (il demande un geste un peu "
+      L"plus rapide qu'un coup de poing)."}},
     {L"Melee", L"weapon_tilt", kTabHands, {L"Melee weapon: tilt (degrees)", L"Arme blanche : inclinaison (degrés)"},
      Kind::Float, 0, -60, 60, 5, kNone,
      {L"Tilts the weapon held in the hand. Positive: the blade leans forward, towards where the controller points.",

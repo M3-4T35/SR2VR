@@ -44,6 +44,11 @@ void SetGameYaw(float degrees, bool steady);
 // false sans mesure récente (hors du jeu, pause). sequence : numéro de la mesure.
 bool GameYaw(float* degrees, unsigned* sequence, bool* steady);
 
+// Stick de déplacement en partie (x droite, y avant, -1 à 1 ; 0 hors partie), pour savoir si le
+// joueur avance, recule ou reste sur place
+void SetMoveStick(float x, float y);
+void MoveStick(float* x, float* y);
+
 // Vitesse de chaque main dans la pièce (m/s ; hand : 0 gauche, 1 droite), rapportée par le
 // thread XR à chaque image du casque, négative si la manette n'est pas suivie. La simulation
 // tourne bien moins vite : TakeHandSpeed rend la plus grande vitesse rapportée depuis sa

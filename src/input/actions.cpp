@@ -20,6 +20,7 @@ std::atomic<float> g_speedPeak[2]{-1.0f, -1.0f}; // plus grande vitesse depuis l
 std::atomic<float> g_speedLast[2]{-1.0f, -1.0f};
 std::atomic<ULONGLONG> g_speedTick[2]{};
 constexpr ULONGLONG kSpeedMaxAgeMs = 300;
+std::atomic<float> g_move[2]{};
 std::atomic<unsigned> g_haptic[2]{}; // 0 : rien ; sinon durée (ms) << 8 | force (1 à 255)
 
 } // namespace
@@ -76,6 +77,18 @@ void SetGameYaw(float degrees, bool steady)
     g_yawSteady = steady;
     g_yawTick = GetTickCount64();
     ++g_yawSequence;
+}
+
+void SetMoveStick(float x, float y)
+{
+    g_move[0] = x;
+    g_move[1] = y;
+}
+
+void MoveStick(float* x, float* y)
+{
+    *x = g_move[0];
+    *y = g_move[1];
 }
 
 void ReportHandSpeed(int hand, float speed)

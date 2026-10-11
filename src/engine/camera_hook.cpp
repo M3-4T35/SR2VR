@@ -285,6 +285,9 @@ struct Settings {
     bool melee = true;           // coups portés au geste (poings, armes blanches)
     float meleeSpeed = 1.8f;     // vitesse de la main qui fait d'un geste un coup, en m/s
     float meleeTilt = 0.0f;      // arme blanche : inclinaison de la main vers l'avant, en degrés
+    bool gunBash = true;         // coup de crosse au geste avec une arme à feu
+    bool bodyFollow = true;      // à pied : le corps du personnage se tourne vers le regard
+    bool crouchHold = true;      // accroupi tant que le stick est tenu vers le bas (sinon bascule du jeu)
 };
 std::mutex g_settingsMutex;
 Settings g_settings;
@@ -336,6 +339,10 @@ void ReadConfig()
     s.meleeSpeed = config::Float("Melee", "speed", 1.8f);
     if (!(s.meleeSpeed >= 0.5f && s.meleeSpeed <= 10.0f))
         s.meleeSpeed = 1.8f;
+    s.gunBash = config::Int("Melee", "gun_bash", 1) != 0;
+    s.bodyFollow = config::Int("FirstPerson", "body_follow", 1) != 0;
+    s.crouchHold = config::Int("Controls", "crouch_hold", 1) != 0;
+    controls::SetCrouchHold(s.crouchHold);
     s.meleeTilt = config::Float("Melee", "weapon_tilt", 0.0f);
     if (!(s.meleeTilt >= -90.0f && s.meleeTilt <= 90.0f))
         s.meleeTilt = 0.0f;
@@ -717,6 +724,87 @@ bool HandFrame(int hand, float grip[3], float origin[3], float orient[9])
     }
     return true;
 }
+// --- Corps tourné vers le regard ----------------------------------------------------------
+// À pied, le jeu ne tourne le personnage que vers là où il marche : immobile, il garde son cap
+// pendant que la tête (le casque) regarde ailleurs, et la flèche de la mini-carte avec lui. On
+// tourne donc la racine du personnage autour de la verticale jusqu'au cap du regard, tant que
+// le joueur est sur place ou avance (quand il part de côté ou recule, le jeu l'oriente lui-même
+// vers sa marche et on le laisse faire).
+constexpr size_t kHumanOrient = 0x20;  // orientation de la racine (droite, haut, avant)
+constexpr size_t kHumanState = 0x591;  // 4 à 6 : à terre, projeté...
+constexpr size_t kHumanBusy = 0x595;   // non nul : mouvement imposé (le jeu saute alors sa mêlée)
+constexpr size_t kHumanAttack = 0xB25; // attaque de mêlée animée en cours (0xFF : aucune)
+bool g_bodyWrote = false;
+float g_bodyWritten = 0.0f;   // cap écrit à l'image précédente, en radians
+unsigned g_bodyTurns = 0;     // images où le corps a été tourné, depuis le dernier relevé
+unsigned g_bodyTaken = 0;     // images où le jeu avait défait notre cap
+float g_bodyWorst = 0.0f;     // plus grand écart rattrapé (radians)
+
+float WrapRadians(float a)
+{
+    while (a > 3.14159265f)
+        a -= 6.2831853f;
+    while (a < -3.14159265f)
+        a += 6.2831853f;
+    return a;
+}
+
+void TurnBodyUnguarded(const float* headed)
+{
+    auto* human = static_cast<uint8_t*>(player::Local());
+    if (!human || human[kHumanBusy] || human[kHumanAttack] != 0xFF ||
+        (static_cast<int8_t>(human[kHumanState]) >= 4 && static_cast<int8_t>(human[kHumanState]) <= 6)) {
+        g_bodyWrote = false;
+        return;
+    }
+    // Sur place ou vers l'avant seulement
+    float x = 0.0f, y = 0.0f;
+    input::actions::MoveStick(&x, &y);
+    const bool idle = x * x + y * y < 0.3f * 0.3f;
+    const bool forward = y > 0.45f && std::fabs(x) < 0.6f * y;
+    // Regard trop vertical : son cap n'a pas de sens
+    if ((!idle && !forward) || std::fabs(headed[7]) > 0.9f) {
+        g_bodyWrote = false;
+        return;
+    }
+    float* orient = reinterpret_cast<float*>(human + kHumanOrient);
+    const float body = std::atan2(orient[6], orient[8]);
+    const float gaze = std::atan2(headed[6], headed[8]);
+    if (g_bodyWrote && idle && std::fabs(WrapRadians(body - g_bodyWritten)) > 0.035f)
+        ++g_bodyTaken; // le jeu a remis son propre cap depuis notre écriture
+    g_bodyWrote = false;
+    const float delta = WrapRadians(gaze - body);
+    if (std::fabs(delta) < 0.05f)
+        return;
+    if (std::fabs(delta) > g_bodyWorst)
+        g_bodyWorst = std::fabs(delta);
+    // La moitié de l'écart à chaque image, 30 degrés au plus : le corps suit sans à-coup
+    float step = 0.5f * delta;
+    step = step > 0.52f ? 0.52f : step < -0.52f ? -0.52f : step;
+    const float c = std::cos(step), s = std::sin(step);
+    for (int row = 0; row < 3; ++row) {
+        const float vx = orient[row * 3], vz = orient[row * 3 + 2];
+        orient[row * 3] = vx * c + vz * s;
+        orient[row * 3 + 2] = vz * c - vx * s;
+    }
+    g_bodyWritten = body + step;
+    g_bodyWrote = true;
+    ++g_bodyTurns;
+}
+
+void TurnBody(const float* headed)
+{
+#if defined(_MSC_VER) && !defined(__clang__)
+    __try {
+        TurnBodyUnguarded(headed);
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        g_bodyWrote = false;
+    }
+#else
+    TurnBodyUnguarded(headed);
+#endif
+}
+
 unsigned long long g_calls = 0;
 unsigned long long g_callsAtLastStats = 0;
 unsigned g_copiesAtLastStats = 0;
@@ -827,7 +915,12 @@ void __cdecl HkUpdateCamera()
     }
     // Coups au geste : seulement quand les bras suivent les manettes
     if (g_meleeReady)
-        melee::SetFrame(g_handsReady && g_handsAllowed && s.melee, s.meleeSpeed);
+        melee::SetFrame(g_handsReady && g_handsAllowed && s.melee, s.meleeSpeed, s.gunBash);
+    // Corps tourné vers le regard
+    if (s.bodyFollow && headed && firstPerson && !g_inVehicle)
+        TurnBody(g_written);
+    else
+        g_bodyWrote = false;
     // Vue réellement appliquée : 0 caméra du jeu, sinon 1 + vue (à pied) ou 10 + vue (en véhicule)
     const int shownView = !firstPerson ? 0 : g_inVehicle ? 10 + g_vehicleView : 1 + g_footView;
     if (shownView != g_lastFirstPerson && state == kPlaying) {
@@ -904,6 +997,12 @@ void __cdecl HkUpdateCamera()
                            "(%u, %u) ; main la plus rapide %.1f m/s, seuil %.1f",
                            m.swings[0], m.hits[0], m.world[0], m.swings[1], m.hits[1], m.world[1], m.fastest,
                            s.meleeSpeed);
+        }
+        if (g_bodyTurns) {
+            LOG_ENGINE("  corps : tourne vers le regard sur %u images (ecart jusqu'a %.0f degres), cap repris par le jeu sur %u",
+                       g_bodyTurns, g_bodyWorst * 57.29578f, g_bodyTaken);
+            g_bodyTurns = g_bodyTaken = 0;
+            g_bodyWorst = 0.0f;
         }
         if (firstPerson)
             LOG_ENGINE("  premiere personne : tete a %.2f m au-dessus de la racine, camera du jeu a %.2f m des yeux",

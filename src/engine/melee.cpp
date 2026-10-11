@@ -59,7 +59,10 @@ void* g_pick = nullptr;
 uint8_t** g_table = nullptr; // pointeur de la table, suivi de son nombre d'entrées
 
 bool g_active = false;
+bool g_gunBash = true;
 float g_startSpeed = 1.8f;
+// Une arme à feu se manie plus vite qu'on ne frappe : seuil relevé pour le coup de crosse
+constexpr float kGunSpeedFactor = 1.3f;
 bool g_faulted = false;
 
 struct Hand {
@@ -79,6 +82,9 @@ Hand g_hands[2];
 Stats g_stats{};
 unsigned g_logged = 0;
 constexpr unsigned kMaxLogged = 40;
+unsigned g_gunLogged = 0; // coups de crosse : comptés à part, pour les voir même après bien des coups de poing
+constexpr unsigned kMaxGunLogged = 25;
+bool g_gunRefused = false;
 
 // État du personnage emprunté le temps d'un balayage, rendu ensuite tel quel
 struct Saved {
@@ -213,9 +219,12 @@ void Update(uint8_t* human)
         // si elle tient une arme à feu, ni pour la gauche quand la droite est armée
         const bool weaponHand = index == 1 && weaponAttack >= 0 && weaponAttack != 0xFF && item;
         const bool fistHand = weaponAttack < 0;
+        // Arme à feu (la gauche n'en tient une que par paire) : coup de crosse, l'attaque
+        // secondaire de l'arme, porté par la main qui la tient
+        const bool gunHand = g_gunBash && weaponAttack == 0xFF && item && (index == 1 || player::DualWielding());
         const bool shaped = weaponHand && *reinterpret_cast<const uint32_t*>(item + kItemShape) &&
                             *reinterpret_cast<const uint32_t*>(item + kItemSlot) && (item[kItemFlags] & 1);
-        bool located = (weaponHand || fistHand) && speed >= 0.0f && hands::Fist(index, point);
+        bool located = (weaponHand || fistHand || gunHand) && speed >= 0.0f && hands::Fist(index, point);
         if (located && shaped)
             memcpy(point, item + kItemPos, sizeof(point)); // l'arme elle-même : le jeu balaie sa forme
         if (located && !(std::isfinite(point[0]) && std::isfinite(point[1]) && std::isfinite(point[2])))
@@ -232,14 +241,19 @@ void Update(uint8_t* human)
 
         // Début et fin du geste
         if (!hand.swinging) {
-            if (speed >= g_startSpeed && hand.havePrev && !attacking) {
-                int attack = weaponHand ? weaponAttack : unarmed;
-                if (!weaponHand && unarmed < 0)
+            if (speed >= (gunHand ? kGunSpeedFactor * g_startSpeed : g_startSpeed) && hand.havePrev && !attacking) {
+                int attack = weaponHand ? weaponAttack : gunHand ? player::HeldMeleeAttack(true) : unarmed;
+                if (fistHand && unarmed < 0)
                     attack = unarmed = CallPick(g_pick, human, 0);
                 bool usable = attack >= 0 && attack != 0xFF && static_cast<uint32_t>(attack) < entries;
                 if (usable) {
                     const uint8_t* entry = *g_table + static_cast<size_t>(attack) * kEntrySize;
                     usable = !(*reinterpret_cast<const uint32_t*>(entry + kEntryFlags) & kEntryCarried);
+                }
+                if (!usable && gunHand && !g_gunRefused) {
+                    g_gunRefused = true;
+                    LOG_ENGINE("melee : coup de crosse impossible avec cette arme (attaque secondaire %d sur %u connues)",
+                               attack, entries);
                 }
                 if (usable) {
                     hand.swinging = true;
@@ -252,10 +266,11 @@ void Update(uint8_t* human)
                 }
             }
         } else if (speed < 0.5f * g_startSpeed || attacking) {
-            if (g_logged < kMaxLogged && !hand.swingHits) {
-                ++g_logged;
+            if (!hand.swingHits && (gunHand ? g_gunLogged < kMaxGunLogged : g_logged < kMaxLogged)) {
+                ++(gunHand ? g_gunLogged : g_logged);
                 LOG_ENGINE("melee : geste de la main %s (%s, attaque %d, jusqu'a %.1f m/s) : rien touche",
-                           index ? "droite" : "gauche", hand.weaponPoint ? "arme" : "poing", hand.attack, hand.swingPeak);
+                           index ? "droite" : "gauche", hand.weaponPoint ? "arme" : gunHand ? "crosse" : "poing", hand.attack,
+                           hand.swingPeak);
             }
             hand.swinging = false;
         }
@@ -271,11 +286,11 @@ void Update(uint8_t* human)
                     hand.swingHits += fresh;
                     g_stats.hits[index] += static_cast<unsigned>(fresh);
                     input::actions::RequestHaptic(index, 1.0f, 90);
-                    if (g_logged < kMaxLogged) {
-                        ++g_logged;
+                    if (gunHand ? g_gunLogged < kMaxGunLogged : g_logged < kMaxLogged) {
+                        ++(gunHand ? g_gunLogged : g_logged);
                         const uint8_t* entry = *g_table + static_cast<size_t>(hand.attack) * kEntrySize;
                         LOG_ENGINE("melee : coup de la main %s (%s, attaque %d de rayon %.2f m, %.1f m/s) : %d touche(s)",
-                                   index ? "droite" : "gauche", shaped ? "forme de l'arme" : weaponHand ? "arme" : "poing",
+                                   index ? "droite" : "gauche", shaped ? "forme de l'arme" : weaponHand ? "arme" : gunHand ? "crosse" : "poing",
                                    hand.attack, *reinterpret_cast<const float*>(entry + kEntryRadius), speed, fresh);
                     }
                 } else if (world) {
@@ -352,8 +367,9 @@ void Remove()
     }
 }
 
-void SetFrame(bool active, float startSpeed)
+void SetFrame(bool active, float startSpeed, bool gunBash)
 {
+    g_gunBash = gunBash;
     g_startSpeed = startSpeed >= 0.5f && startSpeed <= 10.0f ? startSpeed : 1.8f;
     g_active = active && g_updateTarget != nullptr;
 }

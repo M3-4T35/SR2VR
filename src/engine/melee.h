@@ -12,6 +12,9 @@
 // simulation, avec l'attaque que le jeu aurait choisie pour cette arme. Le coup part donc quand
 // la main ou la lame traverse réellement quelqu'un, et le jeu applique ses propres dégâts.
 //
+// Avec une arme à feu, le même geste donne le coup de crosse (l'attaque secondaire de l'arme),
+// au poing qui la tient.
+//
 // La gâchette garde les attaques animées du jeu ; pendant l'une d'elles on ne balaie rien.
 // Tout se passe sur le thread de simulation.
 
@@ -25,7 +28,8 @@ void Remove();
 // À chaque mise à jour de la caméra. active : les bras suivent les manettes (première personne
 // à pied) et les coups au geste sont demandés. startSpeed : vitesse de la main (m/s) à partir de
 // laquelle un geste est un coup ; le geste finit quand elle retombe à la moitié.
-void SetFrame(bool active, float startSpeed);
+// gunBash : un geste rapide d'une main qui tient une arme à feu donne un coup de crosse.
+void SetFrame(bool active, float startSpeed, bool gunBash);
 
 struct Stats {
     unsigned swings[2]; // gestes de chaque main (0 gauche, 1 droite) depuis le dernier relevé

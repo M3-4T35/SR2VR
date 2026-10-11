@@ -110,6 +110,9 @@ private:
     // Tir : 0 commandes posées dans le jeu, 1 boutons de la souris, 2 manette virtuelle
     // ([Controls] fire_mode)
     int fireMode_ = 0;
+    // Accroupi tant que le stick droit est tenu vers le bas ([Controls] crouch_hold) : on peut
+    // alors tourner en l'inclinant de côté sans le relâcher
+    bool crouchHold_ = true;
     bool mouseHeld_[2]{};
     int direction_ = -1;     // menus : 0 haut, 1 bas, 2 gauche, 3 droite, -1 neutre
     Key arrows_[4];

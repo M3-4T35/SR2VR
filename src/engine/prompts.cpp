@@ -19,7 +19,10 @@ namespace {
 // Dessin des touches attribuées à une liste d'entrées (0x00C11C00), cdecl (entrées, nombre) :
 // sub esp,474h ; mov eax,[cookie] ; xor eax,esp ; mov [esp+470h],eax ; mov eax,[esp+478h] ;
 // mov ecx,[esp+47Ch] ; push ebp ; push esi ; mov esi,[curseur] ; cmp esi,251Ch
-constexpr char kKeyTextSig[] = "81 EC 74 04 00 00 A1 ?? ?? ?? ?? 33 C4 89 84 24 70 04 00 00 8B 84 24 78 04 00 00 8B 8C 24 7C 04 "
+// Juiced détourne déjà cette fonction (boutons d'une vraie manette) : sa première instruction
+// (sub esp,474h, 6 octets) est alors remplacée par un saut. Elle n'entre donc pas dans la
+// signature ; notre détour se pose par-dessus celui de Juiced, qui reste appelé ensuite.
+constexpr char kKeyTextSig[] = "?? ?? ?? ?? ?? ?? A1 ?? ?? ?? ?? 33 C4 89 84 24 70 04 00 00 8B 84 24 78 04 00 00 8B 8C 24 7C 04 "
                                "00 00 55 56 8B 35 ?? ?? ?? ?? 81 FE 1C 25 00 00";
 // Dans cette fonction : mov edi,[eax*8+<touches>] (table des touches : 8 octets par entrée,
 // code de balayage en +0, 0x100 / 0x101 / 0x102 pour les boutons de la souris, -1 sans touche)
@@ -295,6 +298,11 @@ bool Install()
         LOG_ENGINE("messages : fonction du jeu introuvable, les touches du clavier restent affichees");
         return false;
     }
+    const bool chained = keyText[0] == 0xE9;
+    if (!chained && !(keyText[0] == 0x81 && keyText[1] == 0xEC)) {
+        LOG_ENGINE("messages : debut inattendu de la fonction (%02X %02X), pas de detour", keyText[0], keyText[1]);
+        return false;
+    }
     const uint8_t* insn = keyText + kBindingsInsn;
     if (insn[0] == 0x8B && insn[1] == 0x3C && insn[2] == 0xC5) {
         uintptr_t table = 0;
@@ -309,9 +317,10 @@ bool Install()
         return false;
     }
     g_target = keyText;
-    LOG_ENGINE("messages : dessin des touches exe+0x%X detourne, table des touches en 0x%08X : les messages du jeu "
+    LOG_ENGINE("messages : dessin des touches exe+0x%X detourne%s, table des touches en 0x%08X : les messages du jeu "
                "montrent les boutons des manettes ([Hud] prompts)",
                static_cast<unsigned>(reinterpret_cast<uintptr_t>(keyText) - reinterpret_cast<uintptr_t>(GetModuleHandleA(nullptr))),
+               chained ? " (par-dessus celui de Juiced)" : "",
                static_cast<unsigned>(reinterpret_cast<uintptr_t>(g_bindings)));
     return true;
 }

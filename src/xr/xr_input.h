@@ -142,6 +142,13 @@ private:
     bool buttonGame_[kButtonCount]{};
     ULONGLONG pulse_[16]{};      // commandes du jeu tenues jusqu'à cet instant (un appui bref)
     bool stickJump_ = false;     // saut commandé au stick droit (bloque la rotation)
+    // Menus pilotés par la manette virtuelle ([Controls] menu_pad) : sticks, boutons, gâchettes
+    // passent tels quels, comme une manette Xbox (carte déplacée au stick, personnage tourné dans
+    // la garde-robe...). Sinon flèches, Entrée et Échap du clavier.
+    bool menuPad_ = true;
+    bool menuPadOn_ = false;
+    void UpdateMenuPad(bool leftTrigger, bool rightTrigger, bool leftClick, bool rightClick, bool leftGrip, bool rightGrip,
+                       float lx, float ly, float rx, float ry);
     bool ready_ = false;
     bool announced_ = false;
     int gameplayShown_ = -1; // dernier mode annoncé dans le log (0 menus, 1 partie)

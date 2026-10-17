@@ -341,6 +341,7 @@ void MenuInput::ReadConfig()
         wheelButton_ = input::vpad::kEast;
     wheelToggle_ = config::Int("Controls", "wheel_toggle", 1) != 0;
     crouchHold_ = config::Int("Controls", "crouch_hold", 1) != 0;
+    menuPad_ = config::Int("Controls", "menu_pad", 1) != 0;
     layout_ = config::Int("Controls", "layout", 0);
     if (layout_ < 0 || layout_ > 2)
         layout_ = 0;
@@ -653,8 +654,39 @@ int MenuInput::ShortLong(Hold& hold, bool down, ULONGLONG now)
     return result;
 }
 
+void MenuInput::UpdateMenuPad(bool leftTrigger, bool rightTrigger, bool leftClick, bool rightClick, bool leftGrip,
+                              bool rightGrip, float lx, float ly, float rx, float ry)
+{
+    namespace vpad = input::vpad;
+    // Un bouton enfoncé en partie n'agit pas dans le menu qui s'ouvre
+    const auto menu = [&](Button button) { return buttonDown_[button] && !buttonGame_[button]; };
+    const auto dead = [](float v) { return std::fabs(v) < 0.12f ? 0.0f : v; };
+    vpad::SetAxis(vpad::kLeftX, dead(lx));
+    vpad::SetAxis(vpad::kLeftY, -dead(ly)); // y vers le bas pour SDL
+    vpad::SetAxis(vpad::kRightX, dead(rx));
+    vpad::SetAxis(vpad::kRightY, -dead(ry));
+    vpad::SetAxis(vpad::kLeftTrigger, leftTrigger ? 1.0f : 0.0f);
+    vpad::SetAxis(vpad::kRightTrigger, rightTrigger ? 1.0f : 0.0f);
+    vpad::SetButton(vpad::kSouth, menu(kA));
+    vpad::SetButton(vpad::kEast, menu(kB));
+    vpad::SetButton(vpad::kWest, menu(kX));
+    vpad::SetButton(vpad::kNorth, menu(kY));
+    vpad::SetButton(vpad::kStart, menu(kMenu));
+    vpad::SetButton(vpad::kBack, menu(kView));
+    vpad::SetButton(vpad::kLeftStick, leftClick);
+    vpad::SetButton(vpad::kRightStick, rightClick);
+    // Boutons hauts : ceux du Steam Frame, ou les poignées (Touch n'en a pas)
+    vpad::SetButton(vpad::kLeftShoulder, menu(kBumperLeft) || leftGrip);
+    vpad::SetButton(vpad::kRightShoulder, menu(kBumperRight) || rightGrip);
+    vpad::SetButton(vpad::kDpadUp, menu(kUp));
+    vpad::SetButton(vpad::kDpadDown, menu(kDown));
+    vpad::SetButton(vpad::kDpadLeft, menu(kLeft));
+    vpad::SetButton(vpad::kDpadRight, menu(kRight));
+}
+
 void MenuInput::ReleaseAll()
 {
+    menuPadOn_ = false;
     for (ULONGLONG& until : pulse_)
         until = 0;
     holdA_ = holdB_ = Hold{};
@@ -951,6 +983,14 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
     const auto inGame = [&](Button button) { return gameplay && buttonDown_[button] && buttonGame_[button]; };
     const auto inMenu = [&](Button button) { return !gameplay && buttonDown_[button] && !buttonGame_[button]; };
     const bool frame = frameLayout_;
+    // Menus : la manette virtuelle, si elle est prête ([Controls] menu_pad)
+    const bool padMenus = menuPad_ && !gameplay && input::vpad::Ready();
+    if (padMenus != menuPadOn_) {
+        menuPadOn_ = padMenus;
+        input::vpad::Reset(); // rien ne reste tenu d'un mode à l'autre
+        LOG_XR("manettes : menus %s", padMenus ? "par la manette virtuelle (sticks, A B X Y, gachettes, boutons hauts)"
+                                               : "quittes, ou par le clavier (fleches, Entree, Echap)");
+    }
 
     // Gâchettes. Dans les menus : Ctrl et Maj (onglets) ; ces modificateurs passent avant les
     // flèches qu'ils accompagnent. En partie : la droite tire, la gauche fait l'attaque
@@ -973,13 +1013,16 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
     actions::Set(actions::kTriggerRight, fireMode == 0 && fireRight);
     SetMouseButton(0, fireMode == 1 && primary);
     SetMouseButton(1, fireMode == 1 && secondary);
-    input::vpad::SetAxis(input::vpad::kRightTrigger, fireMode == 2 && primary ? 1.0f : 0.0f);
-    input::vpad::SetAxis(input::vpad::kLeftTrigger, fireMode == 2 && secondary ? 1.0f : 0.0f);
-    SetKey(control_, !gameplay && leftTrigger, false);
-    SetKey(shift_, gameplay ? pressed(leftGrip_) || (frame && inGame(kA)) : rightTrigger, false);
+    if (!padMenus) {
+        input::vpad::SetAxis(input::vpad::kRightTrigger, fireMode == 2 && primary ? 1.0f : 0.0f);
+        input::vpad::SetAxis(input::vpad::kLeftTrigger, fireMode == 2 && secondary ? 1.0f : 0.0f);
+    }
+    SetKey(control_, !gameplay && !padMenus && leftTrigger, false);
+    SetKey(shift_, gameplay ? pressed(leftGrip_) || (frame && inGame(kA)) : !padMenus && rightTrigger, false);
     const bool reload = inGame(kX);
     actions::Set(actions::kReload, fireMode == 0 && reload);
-    input::vpad::SetButton(input::vpad::kWest, fireMode != 0 && reload);
+    if (!padMenus)
+        input::vpad::SetButton(input::vpad::kWest, fireMode != 0 && reload);
     if ((fireLeft || fireRight) && !firedLogged_) {
         static const char* const kModes[] = {"commande posee dans le jeu", "bouton de souris", "manette virtuelle"};
         LOG_XR("manettes : premier tir a la gachette %s (%s)", fireRight ? "droite" : "gauche", kModes[fireMode]);
@@ -1086,31 +1129,41 @@ void MenuInput::Update(XrSession session, bool focused, XrSpace base, XrTime tim
         turnRemainder_ = 0.0f;
         snap_.active = false;
         snapArmed_ = false; // un stick incliné dans un menu ne fait pas tourner au retour en partie
-
-        // Menus : le stick le plus incliné donne une flèche. Axe dominant ; la direction
-        // courante tient jusqu'à ce que le stick revienne vers le centre.
-        const bool useRight = rx * rx + ry * ry > lx * lx + ly * ly;
-        const float x = useRight ? rx : lx, y = useRight ? ry : ly;
-        const float ax = std::fabs(x), ay = std::fabs(y);
-        int wanted = -1;
-        if (ay >= ax && ay > kEngage)
-            wanted = y > 0.0f ? 0 : 1;
-        else if (ax > ay && ax > kEngage)
-            wanted = x < 0.0f ? 2 : 3;
-        if (wanted == -1 && direction_ != -1) {
-            const float along = direction_ < 2 ? ay : ax;
-            if (along > kRelease)
-                wanted = direction_;
+        if (padMenus) {
+            for (Key& key : arrows_)
+                SetKey(key, false, false);
+            direction_ = -1;
+            UpdateMenuPad(leftTrigger, rightTrigger, pressed(leftClick_), pressed(rightClick_), pressed(leftGrip_),
+                          pressed(rightGrip_), lx, ly, rx, ry);
+        } else {
+            // Menus : le stick le plus incliné donne une flèche. Axe dominant ; la direction
+            // courante tient jusqu'à ce que le stick revienne vers le centre.
+            const bool useRight = rx * rx + ry * ry > lx * lx + ly * ly;
+            const float x = useRight ? rx : lx, y = useRight ? ry : ly;
+            const float ax = std::fabs(x), ay = std::fabs(y);
+            int wanted = -1;
+            if (ay >= ax && ay > kEngage)
+                wanted = y > 0.0f ? 0 : 1;
+            else if (ax > ay && ax > kEngage)
+                wanted = x < 0.0f ? 2 : 3;
+            if (wanted == -1 && direction_ != -1) {
+                const float along = direction_ < 2 ? ay : ax;
+                if (along > kRelease)
+                    wanted = direction_;
+            }
+            direction_ = wanted;
+            for (int i = 0; i < 4; ++i)
+                SetKey(arrows_[i], i == direction_, true);
         }
-        direction_ = wanted;
-        for (int i = 0; i < 4; ++i)
-            SetKey(arrows_[i], i == direction_, true);
     }
 
     // A = Entrée partout. Échap : dans les menus, B, menu (« option ») ou view ; en partie, le
     // bouton menu seul, qui met en pause.
-    SetKey(enter_, buttonDown_[kA], false);
-    SetKey(escape_, buttonDown_[kMenu] || inMenu(kB) || inMenu(kView), false);
+    // Menus par la manette virtuelle : seul le bouton menu enfoncé en partie (la pause qui
+    // s'ouvre) reste sur Échap jusqu'à son relâchement.
+    SetKey(enter_, !padMenus && buttonDown_[kA], false);
+    SetKey(escape_, padMenus ? buttonDown_[kMenu] && buttonGame_[kMenu]
+                             : buttonDown_[kMenu] || inMenu(kB) || inMenu(kView), false);
 }
 
 } // namespace xr

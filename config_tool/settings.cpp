@@ -118,6 +118,13 @@ const Definition kDefs[] = {
       L"Steam Frame controllers (A, B, X, Y only). Applied at once, even while playing.",
       L"Automatique : disposition Steam Frame avec ses manettes, Quest 2 avec les autres. Quest 2 marche aussi sur "
       L"les manettes du Steam Frame (A, B, X, Y seulement). Appliqué tout de suite, même en cours de partie."}},
+    {L"Controls", L"menu_pad", kTabControls, {L"Menus: controlled like a gamepad", L"Menus : pilotés comme une manette"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"On: in menus (pause, map, wardrobe, shops) the controllers act as an Xbox gamepad: sticks, A B X Y, triggers, "
+      L"top buttons or grips. Move around the map, turn the character in the wardrobe. Off: arrow keys, Enter, Escape.",
+      L"Oui : dans les menus (pause, carte, garde-robe, boutiques), les manettes font une manette Xbox : sticks, A B X Y, "
+      L"gâchettes, boutons hauts ou poignées. Se déplacer sur la carte, tourner le personnage dans la garde-robe. Non : "
+      L"flèches, Entrée et Échap du clavier."}},
     {L"Hud", L"prompts", kTabControls, {L"Game messages show", L"Les messages du jeu montrent"}, Kind::Choice, 1, 0, 2, 0,
      {L"Keyboard keys|Controller buttons|Controller buttons (pad drawings, trial)",
       L"Les touches du clavier|Les boutons des manettes|Les boutons (dessins de manette, essai)"},

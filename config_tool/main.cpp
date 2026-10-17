@@ -153,11 +153,15 @@ std::wstring TabNote(int tab)
         const std::wstring common =
             T(L"Both layouts.  Left stick: move (click: food and health, chosen with the stick; held click: next view).  "
               L"Right stick: turn, up = jump, down = crouch (click: weapon wheel).  Triggers: each hand fires.  Right "
-              L"grip: action.  Left grip: sprint.  X: reload / pick up.  In menus: A = confirm, B = back.",
+              L"grip: action.  Left grip: sprint.  X: reload / pick up.\nMenus (virtual screen): like a gamepad.  Sticks: "
+              L"move, map, turn the character.  A = confirm, B = back, X and Y depend on the menu.  Triggers and top "
+              L"buttons (or grips): tabs, zoom.  Option / menu = Start, View = Back.",
               L"Les deux dispositions.  Stick gauche : déplacement (clic : nourriture et soins, choisis au stick ; clic "
               L"tenu : vue suivante).  Stick droit : tourner, haut = sauter, bas = s'accroupir (clic : roue des armes).  "
               L"Gâchettes : chaque main tire.  Poignée droite : action.  Poignée gauche : courir.  X : recharger / "
-              L"ramasser.  Dans les menus : A = valider, B = retour.");
+              L"ramasser.\nMenus (écran virtuel) : comme une manette.  Sticks : se déplacer, carte, tourner le personnage.  "
+              L"A = valider, B = retour, X et Y selon le menu.  Gâchettes et boutons hauts (ou poignées) : onglets, zoom.  "
+              L"Option / menu = Start, View = Back.");
         const std::wstring frame =
             T(L"Steam Frame (like a gamepad).  A: sprint.  B: weapon wheel.  Y: action.  Option: pause menu.  View: map.  "
               L"D-pad up: recruit / dismiss, left and right: taunt and compliment, down: cancel activity.  Left top "

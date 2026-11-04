@@ -4,8 +4,9 @@
 // Le device du jeu est un IDirect3DDevice9 classique (pas Ex) : il ne sait pas créer de
 // texture partagée avec D3D11. L'image passe donc par la mémoire : le back buffer est relu
 // (GetRenderTargetData) dans le hook du Present, puis envoyé à D3D11 par le thread XR.
-// Coûteux (le GPU doit finir l'image avant la lecture) : suffisant pour l'écran virtuel, à
-// remplacer avant la stéréo.
+// Par défaut la relecture est asynchrone ([Display] async_capture=1) : copie GPU, transfert et
+// événement lancés au Present, image lue à un Present suivant sans attendre le GPU (détail
+// dans frame_capture.cpp). async_capture=0 : relecture synchrone, le jeu attend le GPU.
 #include "render/sight_overlay.h"
 
 #include <windows.h>
@@ -48,6 +49,10 @@ void RequestFrame();
 // capturé d'office, et les deux sont publiés en même temps.
 void CaptureFrame(IDirect3DDevice9* device, const FrameView& view);
 
+// Thread du jeu, avant un Reset du device : libère les surfaces D3DPOOL_DEFAULT de la capture
+// (un Reset échoue tant qu'il en reste) et abandonne les copies en vol
+void ReleaseCaptureResources();
+
 // Thread XR : échange `left` et `right` avec la dernière capture de chaque œil quand elle est
 // plus récente que la leur, les deux d'un seul geste (jamais une demi-paire). fresh[i] : l'œil
 // i a reçu une nouvelle image. Les images sans vue (menus) sont rangées avec l'œil gauche.
@@ -55,8 +60,11 @@ void TakeLatestFrames(CpuFrame& left, CpuFrame& right, bool fresh[2]);
 
 // Relevé des captures depuis le dernier appel
 struct CaptureStats {
-    unsigned count = 0;        // captures
-    double averageMs = 0.0;    // durée moyenne d'une capture
+    unsigned count = 0;        // captures publiées
+    double averageMs = 0.0;    // temps moyen pris au thread du jeu par capture
+    unsigned async = 0;        // captures asynchrones publiées
+    double averageLatency = 0.0; // asynchrone : Present écoulés en moyenne entre copie et publication
+    unsigned waits = 0;        // asynchrone : copies attendues (pas finies à temps)
     unsigned pairs = 0;        // paires publiées
     unsigned brokenPairs = 0;  // paires restées incomplètes (œil droit jamais présenté)
     // Par œil, pour les images qui ont une vue : nombre d'images et luminosité moyenne

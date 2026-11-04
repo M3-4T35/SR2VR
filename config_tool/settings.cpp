@@ -214,6 +214,12 @@ const Definition kDefs[] = {
       L"when you turn your head.",
       L"Correction du champ de vue annoncé au casque. Laisser à 1, sauf si le monde semble s'étirer quand la tête "
       L"tourne."}},
+    {L"Display", L"async_capture", kTabAdvanced, {L"Asynchronous frame capture", L"Capture d'image asynchrone"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"The game no longer waits for the graphics card to read back each frame (smoother), at the cost of about "
+      L"one extra game frame of latency. Off: the previous method.",
+      L"Le jeu n'attend plus la carte graphique pour relire chaque image (plus fluide), au prix d'environ une image "
+      L"du jeu de latence en plus. Désactivé : l'ancienne méthode."}},
     {L"Stereo", L"swap_eyes", kTabAdvanced, {L"Swap the eyes", L"Inverser les deux yeux"}, Kind::Bool, 0, 0, 1, 0,
      kNone, {L"If depth looks inside out.", L"Si le relief paraît à l'envers."}},
     {L"Controls", L"fire_mode", kTabAdvanced, {L"How triggers fire", L"Tir aux gâchettes : méthode"}, Kind::Choice, 0,

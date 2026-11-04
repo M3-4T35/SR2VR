@@ -370,6 +370,7 @@ HRESULT STDMETHODCALLTYPE HkDeviceReset(IDirect3DDevice9* self, D3DPRESENT_PARAM
                GetCurrentThreadId());
     if (pp)
         LogPresentParameters("demande", *pp);
+    ReleaseCaptureResources(); // sinon le Reset échoue (surfaces D3DPOOL_DEFAULT)
     const HRESULT hr = g_deviceReset[V](self, pp);
     LOG_RENDER("Reset -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;
@@ -380,6 +381,7 @@ HRESULT STDMETHODCALLTYPE HkResetEx(IDirect3DDevice9Ex* self, D3DPRESENT_PARAMET
     LOG_RENDER("ResetEx demande par %s, thread %lu", hook::Describe(_ReturnAddress()).c_str(), GetCurrentThreadId());
     if (pp)
         LogPresentParameters("demande", *pp);
+    ReleaseCaptureResources();
     const HRESULT hr = g_resetEx(self, pp, mode);
     LOG_RENDER("ResetEx -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;

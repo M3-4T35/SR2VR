@@ -790,6 +790,9 @@ void XrApp::RenderFrame()
                    "seconde, %u incomplete(s)",
                    shownCount_[0], shownCount_[1], shownCount_[2], static_cast<double>(capture.pairs) / seconds,
                    capture.brokenPairs);
+        if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.async)
+            LOG_XR("  capture asynchrone : %u images, publiees %.2f Present apres leur copie en moyenne, %u attendue(s)",
+                   capture.async, capture.averageLatency, capture.waits);
         if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.eyeCount[0] + capture.eyeCount[1])
             LOG_XR("  images avec vue : oeil gauche %u (luminosite moyenne %.0f sur 255), oeil droit %u (luminosite "
                    "moyenne %.0f)",

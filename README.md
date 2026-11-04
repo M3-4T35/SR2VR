@@ -102,6 +102,7 @@ valeurs par défaut, aide) est dans `config_tool/settings.cpp`.
 | `tools/xr_probe/` | Faux jeu D3D9 32 bits pour essayer la capture et OpenXR hors du jeu |
 | `tools/re/` | Scripts Python (capstone) d'analyse statique de `SR2_pc.exe`, voir leur README |
 | `tools/check_settings.py` | Vérifie que DLL, injecteur et lanceur ont les mêmes valeurs par défaut |
+| `tools/tests/` | Tests lancés par `ctest -C Release` (lecture de `sr2_vr.ini` comparée à l'API Windows) |
 
 ## Vérifications
 

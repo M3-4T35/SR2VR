@@ -27,6 +27,9 @@ jobs:
       - name: Compilation (Release)
         run: cmake --build build --config Release --parallel
 
+      - name: Tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
       - uses: actions/upload-artifact@v4
         with:
           name: sr2vr-release

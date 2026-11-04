@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # Dépendances vcpkg liées statiquement : la DLL est chargée par LoadLibrary depuis
 # build/, Windows ne chercherait pas ses DLL dépendantes à côté d'elle.
 set(VCPKG_TARGET_TRIPLET x86-windows-static CACHE STRING "")
-project(SR2VR VERSION 0.25.1 LANGUAGES CXX)
+project(SR2VR VERSION 0.26.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -14,6 +14,18 @@ endif()
 
 # Numéro de version visible dans le log, l'injecteur et l'outil de configuration
 add_compile_definitions(SR2VR_VERSION="${PROJECT_VERSION}")
+
+# Optimisation des versions Release (MSVC) : /O2 déjà donné par CMake ; en plus, optimisation
+# à l'édition de liens sur tout le programme (/GL + /LTCG), fonctions intrinsèques (/Oi),
+# fonctions et données en sections séparées (/Gy /Gw) pour retirer le code et les données
+# inutilisés et fusionner les doublons (/OPT:REF /OPT:ICF).
+# Pas de /fp:fast : le code teste les NaN par des comparaisons (!(x > a && x < b)), que
+# /fp:fast a le droit de supprimer. Pas de /arch:AVX2 : SSE2 (le défaut en 32 bits) reste
+# compatible avec tous les processeurs.
+if(MSVC)
+    add_compile_options("$<$<CONFIG:Release>:/Oi;/Gy;/Gw;/GL>")
+    add_link_options("$<$<CONFIG:Release>:/LTCG;/OPT:REF;/OPT:ICF>")
+endif()
 
 find_package(minhook CONFIG REQUIRED)
 find_package(OpenXR CONFIG REQUIRED)
@@ -78,3 +90,13 @@ target_compile_definitions(xr_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SE
 target_compile_options(xr_probe PRIVATE /utf-8 /W4)
 target_link_libraries(xr_probe PRIVATE OpenXR::openxr_loader d3d9 d3d11 dxgi dxguid advapi32 user32)
 set_property(TARGET xr_probe PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+
+# Test du cache de sr2_vr.ini contre GetPrivateProfileInt / GetPrivateProfileString
+# (ctest -C Release, lancé aussi par la compilation sur GitHub Actions)
+enable_testing()
+add_executable(config_test tools/tests/config_test.cpp src/util/config.cpp)
+target_include_directories(config_test PRIVATE src)
+target_compile_definitions(config_test PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
+target_compile_options(config_test PRIVATE /utf-8 /W4)
+set_property(TARGET config_test PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
+add_test(NAME config_test COMMAND config_test)

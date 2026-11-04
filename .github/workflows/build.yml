@@ -1,0 +1,38 @@
+# Compilation Windows (MSVC 32 bits, vcpkg en mode manifeste) et contrôle des réglages.
+# Les fichiers compilés sont joints au résultat (onglet Actions, « sr2vr-release »).
+name: build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  settings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Valeurs par défaut DLL / injecteur / lanceur
+        run: python3 tools/check_settings.py -v
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configuration (Win32, x86-windows-static)
+        shell: pwsh
+        run: cmake -S . -B build -A Win32 "-DCMAKE_TOOLCHAIN_FILE=$env:VCPKG_INSTALLATION_ROOT\scripts\buildsystems\vcpkg.cmake"
+
+      - name: Compilation (Release)
+        run: cmake --build build --config Release --parallel
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sr2vr-release
+          path: |
+            build/Release/sr2_vr.dll
+            build/Release/sr2_vr_injector.exe
+            build/Release/sr2_vr_config.exe
+            build/Release/xr_probe.exe
+          if-no-files-found: error

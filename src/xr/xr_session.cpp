@@ -260,7 +260,7 @@ private:
 
 void XrApp::ReadConfig()
 {
-    displayMode_ = config::Int("Display", "mode", 0);
+    displayMode_ = config::Int("Display", "mode", 3);
     fovScale_ = config::Float("Display", "fov_scale", 1.0f);
     if (!(fovScale_ > 0.2f && fovScale_ < 5.0f))
         fovScale_ = 1.0f;

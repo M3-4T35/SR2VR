@@ -303,12 +303,12 @@ Settings CurrentSettings()
 void ReadConfig()
 {
     Settings s;
-    const int mode = config::Int("Display", "mode", 0);
+    const int mode = config::Int("Display", "mode", 3);
     s.headTracking = config::Int("Camera", "head_tracking", 1) != 0;
     s.mirror[0] = config::Int("Camera", "mirror_x", 0) != 0;
     s.mirror[1] = config::Int("Camera", "mirror_y", 0) != 0;
     s.mirror[2] = config::Int("Camera", "mirror_z", 0) != 0;
-    s.hfov = config::Float("Camera", "hfov", 0.0f);
+    s.hfov = config::Float("Camera", "hfov", 125.0f);
     if (!(s.hfov >= 30.0f && s.hfov <= 150.0f))
         s.hfov = 0.0f;
     // Par défaut : horizon à plat dès que l'image entoure la tête (c'est la tête qui lève ou
@@ -332,7 +332,7 @@ void ReadConfig()
     s.laser = config::Int("Hands", "laser", 2);
     if (s.laser < 0 || s.laser > 3)
         s.laser = 2;
-    s.handArms = config::Int("Hands", "arms", 0) != 0;
+    s.handArms = config::Int("Hands", "arms", 1) != 0;
     s.torsoMax = config::Float("Hands", "torso", 90.0f);
     if (!(s.torsoMax >= 0.0f && s.torsoMax <= 180.0f))
         s.torsoMax = 90.0f;
@@ -347,7 +347,7 @@ void ReadConfig()
     s.meleeTilt = config::Float("Melee", "weapon_tilt", 0.0f);
     if (!(s.meleeTilt >= -90.0f && s.meleeTilt <= 90.0f))
         s.meleeTilt = 0.0f;
-    s.firstPerson = config::Int("FirstPerson", "enabled", 0) != 0;
+    s.firstPerson = config::Int("FirstPerson", "enabled", 1) != 0;
     s.fpForward = config::Float("FirstPerson", "forward", 0.12f);
     s.fpUp = config::Float("FirstPerson", "up", 0.06f);
     s.fpSmooth = config::Float("FirstPerson", "smooth", 0.12f);
@@ -372,9 +372,9 @@ void ReadConfig()
     s.hudOffsetY = config::Float("Hud", "offset_y", 0.0f);
     if (!(s.hudOffsetY > -720.0f && s.hudOffsetY < 720.0f))
         s.hudOffsetY = 0.0f;
-    s.hudDistance = config::Float("Hud", "distance", 3.0f);
+    s.hudDistance = config::Float("Hud", "distance", 5.0f);
     if (!(s.hudDistance > -100.0f && s.hudDistance < 100.0f))
-        s.hudDistance = 3.0f;
+        s.hudDistance = 5.0f;
     std::lock_guard lock(g_settingsMutex);
     g_settings = s;
 }

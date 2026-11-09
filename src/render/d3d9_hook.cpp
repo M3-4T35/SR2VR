@@ -13,6 +13,7 @@
 #include "engine/camera_hook.h"
 #include "render/frame_capture.h"
 #include "util/hook.h"
+#include "util/config.h"
 #include "util/log.h"
 
 #include <d3d9.h>
@@ -101,6 +102,7 @@ PresentExFn g_presentEx = nullptr;
 ResetExFn g_resetEx = nullptr;
 
 std::vector<void*> g_targets; // fonctions détournées par MinHook
+bool g_diagnostics = false;   // [Debug] d3d_stats, lu à l'installation
 
 // Indice tiré des sources de Juiced (Render3D.cpp, bitmap.cpp) : variable globale de l'exe
 // qui contient le device du jeu. Sert seulement à recouper ce que le hook observe, et
@@ -233,10 +235,12 @@ void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
         const unsigned begins = g_beginScenes.exchange(0), ends = g_endScenes.exchange(0);
         const unsigned clears = g_clears.exchange(0), targets = g_setRenderTargets.exchange(0);
         // Relevé toutes les 10 s pendant 5 min, puis toutes les minutes
-        if (g_statsLogged < 30 || g_statsLogged % 6 == 0)
+        if ((g_statsLogged < 30 || g_statsLogged % 6 == 0) && g_diagnostics)
             LOG_RENDER("images : %llu au total, %.1f par seconde ; par image : %.1f BeginScene, %.1f EndScene, "
                        "%.1f Clear, %.1f SetRenderTarget",
                        n, fps, begins / frames, ends / frames, clears / frames, targets / frames);
+        else if (g_statsLogged < 30 || g_statsLogged % 6 == 0)
+            LOG_RENDER("images : %llu au total, %.1f par seconde", n, fps);
         const unsigned created = g_createdTotal;
         if (created != g_createdAtLastLog) {
             g_createdAtLastLog = created;
@@ -430,6 +434,9 @@ int HookDevice(IDirect3DDevice9* device)
     int ok = 0;
     ok += Hook(device, kDevicePresent, &HkDevicePresent<V>, &g_devicePresent[V], "IDirect3DDevice9::Present");
     ok += Hook(device, kDeviceReset, &HkDeviceReset<V>, &g_deviceReset[V], "IDirect3DDevice9::Reset");
+    // Compteurs de mise au point ([Debug] d3d_stats=1) : appels par image et ressources créées.
+    // Sans eux, seuls Present et Reset sont détournés.
+    if (g_diagnostics) {
     ok += Hook(device, kDeviceBeginScene, &HkBeginScene<V>, &g_beginScene[V], "IDirect3DDevice9::BeginScene");
     ok += Hook(device, kDeviceEndScene, &HkEndScene<V>, &g_endScene[V], "IDirect3DDevice9::EndScene");
     ok += Hook(device, kDeviceClear, &HkClear<V>, &g_clear[V], "IDirect3DDevice9::Clear");
@@ -445,6 +452,7 @@ int HookDevice(IDirect3DDevice9* device)
                "IDirect3DDevice9::CreateVertexBuffer");
     ok += Hook(device, kDeviceCreateIndexBuffer, &HkCreateIndexBuffer<V>, &g_createIndexBuffer[V],
                "IDirect3DDevice9::CreateIndexBuffer");
+    }
 
     IDirect3DSwapChain9* sc = nullptr;
     if (SUCCEEDED(device->GetSwapChain(0, &sc)) && sc) {
@@ -459,6 +467,7 @@ int HookDevice(IDirect3DDevice9* device)
 
 bool InstallD3D9Hooks()
 {
+    g_diagnostics = config::Int("Debug", "d3d_stats", 0) != 0;
     HMODULE d3d9 = GetModuleHandleW(L"d3d9.dll");
     if (!d3d9) {
         LOG_RENDER("ERREUR : d3d9.dll n'est pas chargee, hooks desactives");

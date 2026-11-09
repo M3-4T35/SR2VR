@@ -73,6 +73,7 @@
 #include "engine/hands.h"
 #include "engine/hud.h"
 #include "engine/melee.h"
+#include "engine/pacing.h"
 #include "engine/player.h"
 #include "engine/prompts.h"
 #include "input/actions.h"
@@ -653,6 +654,56 @@ void PlaceHud(const Settings& s, bool immersed, int eye, float ipd, float hfov)
     g_hudAppliedTick = now;
 }
 
+// --- Où passe le temps d'une image de simulation ---------------------------------------------
+// Mesuré autour de la préparation d'une image (thread de simulation). La préparation commence
+// par attendre que le thread du rendu ait fini l'image précédente : sa durée dit donc combien
+// de temps la simulation est restée bloquée par le rendu. En vrai relief, celle de l'œil droit
+// attend tout le rendu de l'œil gauche.
+struct FrameProfile {
+    std::atomic<unsigned> frames{0};
+    std::atomic<unsigned> simUs{0};   // entre deux préparations : simulation et le reste de la boucle du jeu
+    std::atomic<unsigned> firstUs{0}; // préparation de l'image (ou de l'œil gauche)
+    std::atomic<unsigned> secondUs{0}; // préparation de l'œil droit
+    std::atomic<unsigned> seconds{0};
+};
+FrameProfile g_profile;
+LONGLONG g_profileEnd = 0; // fin de la dernière préparation (thread de simulation)
+
+LONGLONG ProfileNow()
+{
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+    return now.QuadPart;
+}
+
+unsigned ProfileUs(LONGLONG from, LONGLONG to)
+{
+    static const LONGLONG frequency = [] {
+        LARGE_INTEGER f;
+        QueryPerformanceFrequency(&f);
+        return f.QuadPart;
+    }();
+    const LONGLONG us = (to - from) * 1000000 / frequency;
+    return us > 0 ? static_cast<unsigned>(us) : 0u;
+}
+
+// first / second : fin de chaque préparation (second = 0 : une seule)
+void ProfileFrame(LONGLONG start, LONGLONG first, LONGLONG second)
+{
+    const unsigned sim = g_profileEnd ? ProfileUs(g_profileEnd, start) : 0u;
+    g_profileEnd = second ? second : first;
+    // Chargement, pause, fenêtre déplacée : pas une image ordinaire
+    if (sim == 0 || sim > 250000)
+        return;
+    ++g_profile.frames;
+    g_profile.simUs += sim;
+    g_profile.firstUs += ProfileUs(start, first);
+    if (second) {
+        g_profile.secondUs += ProfileUs(first, second);
+        ++g_profile.seconds;
+    }
+}
+
 ULONGLONG g_lastStats = 0;
 int g_lastState = -1;
 int g_lastCameraMode = -1;
@@ -1001,6 +1052,21 @@ void __cdecl HkUpdateCamera()
                        : state == kInterface ? ", INTERFACE DU JEU OUVERTE"
                        : state == kCutscene  ? ", CINEMATIQUE"
                                              : "");
+            if (const unsigned frames = g_profile.frames.exchange(0)) {
+                const unsigned seconds2 = g_profile.seconds.exchange(0);
+                const double sim = g_profile.simUs.exchange(0) / 1000.0 / frames;
+                const double first = g_profile.firstUs.exchange(0) / 1000.0 / frames;
+                const double second = seconds2 ? g_profile.secondUs.exchange(0) / 1000.0 / seconds2 : 0.0;
+                g_profile.secondUs = 0;
+                LOG_ENGINE("  temps par image de simulation (%u mesurees) : %.1f ms de simulation, %.1f ms a preparer "
+                           "l'image%s (attente de la fin du rendu precedent comprise)%s",
+                           frames, sim, first, seconds2 ? " de l'oeil gauche" : "",
+                           seconds2 ? "" : " ; un seul rendu par image");
+                if (seconds2)
+                    LOG_ENGINE("    et %.1f ms pour l'oeil droit (%u paires : la simulation y attend tout le rendu de "
+                               "l'oeil gauche) ; total %.1f ms",
+                               second, seconds2, sim + first + second);
+            }
             LOG_ENGINE("  vues en attente au Present : aucune %u, une %u, deux %u ; images sans pose de tete %u, "
                        "vues perdues %u",
                        g_pendingAtPresent[0].exchange(0), g_pendingAtPresent[1].exchange(0),
@@ -1210,6 +1276,7 @@ void OnRenderCamera(double* fov)
 // œil droit, sans que la simulation avance entre les deux.
 int __cdecl HkRenderFrame()
 {
+    const LONGLONG profileStart = ProfileNow();
     const Settings s = CurrentSettings();
     Pair pair;
     const bool immersed = xr::GetHeadPose(pair.quat, &pair.ipd) && s.headTracking && GameState(s) == kPlaying;
@@ -1217,7 +1284,9 @@ int __cdecl HkRenderFrame()
     if (!s.pairs || !g_pendingCamera || !immersed) {
         // Un œil par image : l'interface se décale pour l'œil qu'OnRenderCamera va choisir
         PlaceHud(s, immersed, s.stereo && immersed ? static_cast<int>(g_eyeCounter & 1) : -1, pair.ipd, hfov);
-        return g_renderFrame();
+        const int single = g_renderFrame();
+        ProfileFrame(profileStart, ProfileNow(), 0);
+        return single;
     }
 
     // Ce que la simulation a demandé au rendu pour cette image, à redonner à l'œil droit
@@ -1232,6 +1301,8 @@ int __cdecl HkRenderFrame()
     g_pair = pair;
     PlaceHud(s, true, 0, pair.ipd, hfov);
     const int result = g_renderFrame();
+    const LONGLONG profileFirst = ProfileNow();
+    LONGLONG profileSecond = 0;
     // Image sans caméra de jeu (chargement, menu principal) : rien à rendre pour l'autre œil
     if (g_pair.viewed) {
         memcpy(g_pendingCamera, pending, sizeof(pending));
@@ -1241,9 +1312,11 @@ int __cdecl HkRenderFrame()
         g_pair.eye = 1;
         PlaceHud(s, true, 1, pair.ipd, hfov);
         g_renderFrame();
+        profileSecond = ProfileNow();
         ++g_pairsRendered;
     }
     g_pair.active = false;
+    ProfileFrame(profileStart, profileFirst, profileSecond);
     return result;
 }
 
@@ -1262,6 +1335,7 @@ double __cdecl HkGetFov()
 bool InstallCameraHook()
 {
     ReadConfig();
+    pacing::Install(); // indépendant de la caméra : vaut aussi dans les menus
     const auto base = reinterpret_cast<uintptr_t>(GetModuleHandleW(nullptr));
     const auto rel = [base](const void* p) { return static_cast<unsigned long>(reinterpret_cast<uintptr_t>(p) - base); };
     const auto absolute = [](const uint8_t* operand) {
@@ -1427,6 +1501,7 @@ void RemoveCameraHook()
     aim::Remove();
     prompts::Remove();
     controls::Remove();
+    pacing::Remove();
     g_aimReady = false;
     if (g_applied && g_orient)
         memcpy(g_orient, g_gameOrient, sizeof(g_gameOrient));

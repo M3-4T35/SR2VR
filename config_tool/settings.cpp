@@ -214,6 +214,14 @@ const Definition kDefs[] = {
       L"when you turn your head.",
       L"Correction du champ de vue annoncé au casque. Laisser à 1, sauf si le monde semble s'étirer quand la tête "
       L"tourne."}},
+    {L"Display", L"frame_cap", kTabAdvanced,
+     {L"Frame rate cap (0: the game's own brake)", L"Plafond d'images par seconde (0 : frein du jeu)"}, Kind::Float,
+     100, 0, 240, 10, kNone,
+     {L"Saints Row 2 slows itself down as soon as it exceeds 35 frames per second: it sleeps after every frame. "
+      L"This replaces that brake with a plain cap, which gives more frames in VR. 0: the game's original behaviour.",
+      L"Saints Row 2 se freine dès qu'il dépasse 35 images par seconde : il dort après chaque image. Ce réglage "
+      L"remplace ce frein par un simple plafond, ce qui donne plus d'images en VR. 0 : le comportement d'origine du "
+      L"jeu."}},
     {L"Display", L"async_capture", kTabAdvanced, {L"Asynchronous frame capture", L"Capture d'image asynchrone"},
      Kind::Bool, 1, 0, 1, 0, kNone,
      {L"The game no longer waits for the graphics card to read back each frame (smoother), at the cost of about "

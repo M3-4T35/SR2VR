@@ -41,4 +41,7 @@ int AimHand();
 // simulation.
 int FireHand();
 
+// Deux armes : images où le tir a été relâché pour réarmer la détente (statistiques)
+unsigned TakeFireGaps();
+
 } // namespace engine::controls

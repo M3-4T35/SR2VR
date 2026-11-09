@@ -1019,9 +1019,9 @@ void __cdecl HkUpdateCamera()
                        player::DualWielding() ? " ; une arme dans chaque main" : "");
             if (stats.calls[0] + stats.calls[1])
                 LOG_ENGINE("    tir : main gauche %u images de tir, %u avec son rayon, %u balles ; main droite %u, %u, %u ; "
-                           "%u tir(s) differe(s)",
+                           "%u tir(s) differe(s), detente relachee %u fois entre deux mains",
                            stats.calls[0], stats.scoped[0], stats.bullets[0], stats.calls[1], stats.scoped[1],
-                           stats.bullets[1], stats.deferred);
+                           stats.bullets[1], stats.deferred, controls::TakeFireGaps());
             static const char* const kRays[] = {"regard", "main gauche", "main droite"};
             for (int hand = -1; hand < 2; ++hand) {
                 aim::Sight sight;

@@ -98,6 +98,13 @@ Trigger g_left, g_right;
 int g_aimHand = 1;
 int g_fireWanted = -1; // deux armes : main de la seule gâchette tenue (ou de celle qui vient d'être pressée), -1 sinon
 int g_fireTurn = 1;    // deux gâchettes tenues : main du prochain coup
+// Deux armes : gâchettes pressées dont le coup reste à donner (bit 0 gauche, bit 1 droite). Un
+// pistolet semi-automatique ne retire que si la commande de tir a été relâchée : quand une
+// gâchette est pressée alors que l'autre tient déjà le tir, la commande est relâchée une image
+// avant de repartir avec la nouvelle main.
+unsigned g_fireQueue = 0;
+bool g_primaryHeld = false; // commande de tir posée à l'image précédente
+unsigned g_fireGaps = 0;
 bool g_announced[kCommandCount]{};
 bool g_dualShown = false;
 bool g_handShown[2]{};
@@ -166,11 +173,23 @@ void Apply()
     bool primary = false;
     g_fireWanted = -1;
     if (twoGuns) {
-        primary = left || right;
-        if (g_left.edge != g_right.edge)
-            g_fireWanted = g_left.edge ? 0 : 1;
-        else if (left != right)
-            g_fireWanted = left ? 0 : 1;
+        if (g_left.edge)
+            g_fireQueue |= 1u;
+        if (g_right.edge)
+            g_fireQueue |= 2u;
+        g_fireQueue &= (left ? 1u : 0u) | (right ? 2u : 0u); // gâchette déjà relâchée : coup oublié
+        if (g_fireQueue && g_primaryHeld) {
+            primary = false; // relâchée une image : la détente du jeu se réarme
+            ++g_fireGaps;
+        } else if (g_fireQueue) {
+            primary = true;
+            g_fireWanted = (g_fireQueue & 2u) ? 1 : 0; // la droite d'abord si les deux
+            g_fireQueue &= ~(1u << g_fireWanted);
+        } else {
+            primary = left || right;
+            if (left != right)
+                g_fireWanted = left ? 0 : 1;
+        }
         if (g_fireWanted >= 0) {
             g_aimHand = g_fireWanted;
             if (!g_handShown[g_fireWanted]) {
@@ -179,9 +198,11 @@ void Apply()
             }
         }
     } else {
+        g_fireQueue = 0;
         g_aimHand = 1;
         primary = right || (left && dual);
     }
+    g_primaryHeld = primary;
 
     // À pied et en véhicule, le jeu n'écoute pas les mêmes commandes
     if (primary)
@@ -367,6 +388,13 @@ int SlotOf(int command)
 int AimHand()
 {
     return g_aimHand;
+}
+
+unsigned TakeFireGaps()
+{
+    const unsigned gaps = g_fireGaps;
+    g_fireGaps = 0;
+    return gaps;
 }
 
 int FireHand()

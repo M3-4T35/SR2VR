@@ -555,6 +555,7 @@ void RemoveD3D9Hooks()
     if (g_targets.empty())
         return;
     hook::RemoveAll(g_targets);
+    StopCaptureWorker();
     LOG_RENDER("hooks retires (%llu images vues)", g_frames.load());
 }
 

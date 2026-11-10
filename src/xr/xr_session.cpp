@@ -791,8 +791,12 @@ void XrApp::RenderFrame()
                    shownCount_[0], shownCount_[1], shownCount_[2], static_cast<double>(capture.pairs) / seconds,
                    capture.brokenPairs);
         if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.async)
-            LOG_XR("  capture asynchrone : %u images, publiees %.2f Present apres leur copie en moyenne, %u attendue(s)",
-                   capture.async, capture.averageLatency, capture.waits);
+            LOG_XR("  capture asynchrone : %u images, publiees %.2f Present apres leur copie en moyenne, %u attendue(s)"
+                   "%s",
+                   capture.async, capture.averageLatency, capture.waits,
+                   capture.workerMs > 0.0 ? " (lues par le thread de lecture)" : "");
+        if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.workerMs > 0.0)
+            LOG_XR("  thread de lecture : %.2f ms par image (hors du thread du jeu)", capture.workerMs);
         if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && capture.eyeCount[0] + capture.eyeCount[1])
             LOG_XR("  images avec vue : oeil gauche %u (luminosite moyenne %.0f sur 255), oeil droit %u (luminosite "
                    "moyenne %.0f)",

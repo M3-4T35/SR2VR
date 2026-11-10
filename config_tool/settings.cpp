@@ -222,12 +222,14 @@ const Definition kDefs[] = {
       L"Saints Row 2 se freine dès qu'il dépasse 35 images par seconde : il dort après chaque image. Ce réglage "
       L"remplace ce frein par un simple plafond, ce qui donne plus d'images en VR. 0 : le comportement d'origine du "
       L"jeu."}},
-    {L"Display", L"async_capture", kTabAdvanced, {L"Asynchronous frame capture", L"Capture d'image asynchrone"},
-     Kind::Bool, 1, 0, 1, 0, kNone,
-     {L"The game no longer waits for the graphics card to read back each frame (smoother), at the cost of about "
-      L"one extra game frame of latency. Off: the previous method.",
-      L"Le jeu n'attend plus la carte graphique pour relire chaque image (plus fluide), au prix d'environ une image "
-      L"du jeu de latence en plus. Désactivé : l'ancienne méthode."}},
+    {L"Display", L"async_capture", kTabAdvanced, {L"Frame readback", L"Relecture de l'image"}, Kind::Choice, 0, 0, 2,
+     0, {L"By the game, at once|By the game, one frame later|By a separate thread (trial)",
+         L"Par le jeu, tout de suite|Par le jeu, une image plus tard|Par un autre thread (essai)"},
+     {L"Reading each frame back for the headset costs the game about 4 ms. A separate thread can do it while the "
+      L"game waits for something else: more frames per second if it works on your machine. Applies while playing.",
+      L"Relire chaque image pour le casque coûte environ 4 ms au jeu. Un autre thread peut le faire pendant que le "
+      L"jeu attend autre chose : plus d'images par seconde si cela marche sur votre machine. Pris en compte en "
+      L"cours de partie."}},
     {L"Stereo", L"swap_eyes", kTabAdvanced, {L"Swap the eyes", L"Inverser les deux yeux"}, Kind::Bool, 0, 0, 1, 0,
      kNone, {L"If depth looks inside out.", L"Si le relief paraît à l'envers."}},
     {L"Controls", L"fire_mode", kTabAdvanced, {L"How triggers fire", L"Tir aux gâchettes : méthode"}, Kind::Choice, 0,

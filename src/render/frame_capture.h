@@ -4,9 +4,9 @@
 // Le device du jeu est un IDirect3DDevice9 classique (pas Ex) : il ne sait pas créer de
 // texture partagée avec D3D11. L'image passe donc par la mémoire : le back buffer est relu
 // (GetRenderTargetData) dans le hook du Present, puis envoyé à D3D11 par le thread XR.
-// Par défaut la relecture est asynchrone ([Display] async_capture=1) : copie GPU, transfert et
-// événement lancés au Present, image lue à un Present suivant sans attendre le GPU (détail
-// dans frame_capture.cpp). async_capture=0 : relecture synchrone, le jeu attend le GPU.
+// [Display] async_capture choisit qui paie cette relecture (environ 3 ms par image, détail et
+// mesures dans frame_capture.cpp) : 0 le thread du jeu, au Present (par défaut) ; 1 le thread du
+// jeu, à un Present suivant ; 2 un thread de lecture à nous, le Present ne lançant que la copie.
 #include "render/sight_overlay.h"
 
 #include <windows.h>
@@ -53,6 +53,10 @@ void CaptureFrame(IDirect3DDevice9* device, const FrameView& view);
 // (un Reset échoue tant qu'il en reste) et abandonne les copies en vol
 void ReleaseCaptureResources();
 
+// Retrait de la DLL : arrête le thread de lecture s'il existe (les surfaces restent en place,
+// le device du jeu n'est peut-être plus là pour les libérer)
+void StopCaptureWorker();
+
 // Thread XR : échange `left` et `right` avec la dernière capture de chaque œil quand elle est
 // plus récente que la leur, les deux d'un seul geste (jamais une demi-paire). fresh[i] : l'œil
 // i a reçu une nouvelle image. Les images sans vue (menus) sont rangées avec l'œil gauche.
@@ -65,6 +69,7 @@ struct CaptureStats {
     unsigned async = 0;        // captures asynchrones publiées
     double averageLatency = 0.0; // asynchrone : Present écoulés en moyenne entre copie et publication
     unsigned waits = 0;        // asynchrone : copies attendues (pas finies à temps)
+    double workerMs = 0.0;     // lecture par un autre thread : temps moyen de ce thread par image
     unsigned pairs = 0;        // paires publiées
     unsigned brokenPairs = 0;  // paires restées incomplètes (œil droit jamais présenté)
     // Par œil, pour les images qui ont une vue : nombre d'images et luminosité moyenne

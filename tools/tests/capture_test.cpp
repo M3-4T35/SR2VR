@@ -2,8 +2,9 @@
 // Chaque image est remplie d'une couleur qui encode son numéro, porté aussi par sa vue
 // (headQuat[0]). Les images publiées doivent avoir la couleur de leur vue (pas de mélange
 // entre une image et la vue d'une autre), les paires d'yeux doivent arriver complètes et
-// dans l'ordre. Lancé en capture synchrone puis asynchrone ([Display] async_capture),
-// avec un Reset du device au milieu. Code de sortie : nombre d'erreurs.
+// dans l'ordre. Lancé dans les trois modes de [Display] async_capture (synchrone, asynchrone,
+// lecture par un autre thread), avec un Reset du device au milieu de chacun. Code de sortie :
+// nombre d'erreurs.
 #include <windows.h>
 #include <d3d9.h>
 
@@ -123,9 +124,10 @@ int RunMode(IDirect3DDevice9* device, D3DPRESENT_PARAMETERS pp, int async)
     }
     render::CaptureStats stats;
     render::TakeCaptureStats(&stats);
+    static const char* const kModes[3] = {"synchrone", "asynchrone", "autre thread"};
     printf("  mode %s : %u images publiees, %u paires completes, %u incompletes, %.3f ms par capture, "
            "%u asynchrones (%.2f Present de retard en moyenne, %u attendues)\n",
-           async ? "asynchrone" : "synchrone", published, pairsOk, stats.brokenPairs, stats.averageMs, stats.async,
+           kModes[async], published, pairsOk, stats.brokenPairs, stats.averageMs, stats.async,
            stats.averageLatency, stats.waits);
     if (published < 100 || pairsOk < 50) {
         printf("  ERREUR : trop peu d'images publiees\n");
@@ -168,11 +170,12 @@ int main(int argc, char** argv)
     pp.hDeviceWindow = window;
     pp.PresentationInterval = D3DPRESENT_INTERVAL_IMMEDIATE;
     IDirect3DDevice9* device = nullptr;
-    HRESULT hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_HARDWARE_VERTEXPROCESSING,
-                                   &pp, &device);
+    // MULTITHREADED comme le device du jeu : la lecture par un autre thread l'exige
+    HRESULT hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
+                                   D3DCREATE_HARDWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &pp, &device);
     if (FAILED(hr))
-        hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window, D3DCREATE_SOFTWARE_VERTEXPROCESSING, &pp,
-                               &device);
+        hr = d3d->CreateDevice(D3DADAPTER_DEFAULT, D3DDEVTYPE_HAL, window,
+                               D3DCREATE_SOFTWARE_VERTEXPROCESSING | D3DCREATE_MULTITHREADED, &pp, &device);
     if (FAILED(hr) || !device) {
         printf("device D3D9 non cree : 0x%08lX, test ignore\n", static_cast<unsigned long>(hr));
         return 77;
@@ -180,8 +183,12 @@ int main(int argc, char** argv)
 
     g_errors += RunMode(device, pp, 0);
     g_errors += RunMode(device, pp, 1);
-    g_errors += RunMode(device, pp, 0); // retour à l'ancienne méthode en cours de route
+    g_errors += RunMode(device, pp, 2);
+    g_errors += RunMode(device, pp, 1); // d'un mode à l'autre en cours de route
+    g_errors += RunMode(device, pp, 2);
+    g_errors += RunMode(device, pp, 0);
 
+    render::StopCaptureWorker();
     render::ReleaseCaptureResources();
     device->Release();
     d3d->Release();

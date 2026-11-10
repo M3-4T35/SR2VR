@@ -230,6 +230,12 @@ const Definition kDefs[] = {
       L"Relire chaque image pour le casque coûte environ 4 ms au jeu. Un autre thread peut le faire pendant que le "
       L"jeu attend autre chose : plus d'images par seconde si cela marche sur votre machine. Pris en compte en "
       L"cours de partie."}},
+    {L"Display", L"reconnect", kTabAdvanced, {L"Reconnect the headset (trial)", L"Reconnexion du casque (essai)"},
+     Kind::Bool, 0, 0, 1, 0, kNone,
+     {L"When the link to the headset drops or SteamVR closes, the game keeps trying to get back into the headset "
+      L"for ten minutes instead of staying on the monitor until you restart it.",
+      L"Quand la liaison avec le casque tombe ou que SteamVR se ferme, le jeu essaie de revenir dans le casque "
+      L"pendant dix minutes, au lieu de rester sur l'écran jusqu'à ce que vous le relanciez."}},
     {L"Stereo", L"swap_eyes", kTabAdvanced, {L"Swap the eyes", L"Inverser les deux yeux"}, Kind::Bool, 0, 0, 1, 0,
      kNone, {L"If depth looks inside out.", L"Si le relief paraît à l'envers."}},
     {L"Controls", L"fire_mode", kTabAdvanced, {L"How triggers fire", L"Tir aux gâchettes : méthode"}, Kind::Choice, 0,

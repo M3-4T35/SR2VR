@@ -186,7 +186,9 @@ bool SelectRuntime()
 class XrApp {
 public:
     ~XrApp() { Shutdown(); }
-    void Run();
+    // true : une session a existé puis s'est terminée (liaison perdue, SteamVR fermé) ;
+    // false : OpenXR n'a jamais pu démarrer
+    bool Run();
 
 private:
     bool Check(XrResult r, const char* what);
@@ -209,6 +211,7 @@ private:
     XrSessionState state_ = XR_SESSION_STATE_UNKNOWN;
     bool running_ = false;
     bool exitRequested_ = false;
+    int frameFailures_ = 0; // xrWaitFrame en échec d'affilée
     bool quietErrors_ = false; // nouveaux essais de création de l'instance : sans log
 
     ID3D11Device* device_ = nullptr;
@@ -296,6 +299,8 @@ bool XrApp::Check(XrResult r, const char* what)
     if (instance_ == XR_NULL_HANDLE || XR_FAILED(xrResultToString(instance_, r, name)))
         snprintf(name, sizeof(name), "%d", static_cast<int>(r));
     LOG_XR("ERREUR : %s -> %s", what, name);
+    if (r == XR_ERROR_SESSION_LOST || r == XR_ERROR_INSTANCE_LOST)
+        exitRequested_ = true; // rien à attendre de cette session : on la termine
     return false;
 }
 
@@ -600,8 +605,20 @@ void XrApp::RenderFrame()
     XrFrameState fs{XR_TYPE_FRAME_STATE};
     {
         Phase p("xrWaitFrame");
-        if (!Check(xrWaitFrame(session_, &wi, &fs), "xrWaitFrame"))
+        const XrResult waited = xrWaitFrame(session_, &wi, &fs);
+        if (XR_FAILED(waited)) {
+            // Runtime mort sans prévenir (SteamVR fermé) : l'appel échoue à chaque tour. Une
+            // ligne de log au premier échec, puis la session est terminée après 3 s d'échecs.
+            if (frameFailures_++ == 0)
+                Check(waited, "xrWaitFrame");
+            if (frameFailures_ >= 150) {
+                LOG_XR("xrWaitFrame en echec %d fois de suite : session consideree comme perdue", frameFailures_);
+                exitRequested_ = true;
+            }
+            Sleep(20);
             return;
+        }
+        frameFailures_ = 0;
     }
     XrFrameBeginInfo bi{XR_TYPE_FRAME_BEGIN_INFO};
     {
@@ -838,11 +855,11 @@ void XrApp::Shutdown()
     device_ = nullptr;
 }
 
-void XrApp::Run()
+bool XrApp::Run()
 {
     if (!SelectRuntime()) {
         LOG_XR("OpenXR indisponible : le jeu continue sans VR");
-        return;
+        return false;
     }
     // Runtime pas encore prêt (SteamVR sans casque connecté : xrCreateInstance échoue avec
     // XR_ERROR_RUNTIME_FAILURE après quelques secondes) : on réessaie au lieu d'abandonner la
@@ -859,7 +876,7 @@ void XrApp::Run()
         LOG_XR("runtime OpenXR pret apres %d essai(s) infructueux", attempts);
     if (g_stop || !WaitForSystem() || !CreateDevice() || !CreateSession()) {
         LOG_XR("OpenXR indisponible : le jeu continue sans VR");
-        return;
+        return false;
     }
     LOG_XR("en attente de l'etat READY (mettre le casque)");
     while (!g_stop && !exitRequested_) {
@@ -875,6 +892,7 @@ void XrApp::Run()
     if (running_)
         xrEndSession(session_);
     LOG_XR("fin de la session OpenXR");
+    return true;
 }
 
 } // namespace
@@ -883,8 +901,37 @@ void Start()
 {
     std::thread(Watchdog).detach();
     std::thread([] {
-        XrApp app;
-        app.Run();
+        // [Display] reconnect=1 : quand la session se termine sans qu'on l'ait demandé (liaison
+        // sans fil coupée, SteamVR fermé), tout est détruit et une nouvelle session est
+        // tentée, pendant dix minutes au plus. 0 (par défaut) : le jeu continue sans VR.
+        constexpr ULONGLONG kGiveUpMs = 10 * 60 * 1000;
+        ULONGLONG lostAt = 0;
+        for (;;) {
+            bool established;
+            {
+                XrApp app;
+                established = app.Run();
+            } // session, instance et device D3D11 détruits ici
+            {
+                std::lock_guard lock(g_headMutex);
+                g_headTick = 0; // plus de pose de tête : le jeu reprend sa caméra
+            }
+            if (g_stop || config::Int("Display", "reconnect", 0) == 0)
+                break;
+            const ULONGLONG now = GetTickCount64();
+            if (established) {
+                lostAt = now;
+                LOG_XR("session terminee sans demande d'arret : nouvelle tentative dans 5 s, puis tant que le "
+                       "casque ne revient pas, pendant 10 minutes au plus ([Display] reconnect)");
+            } else if (!lostAt) {
+                break; // OpenXR n'a jamais démarré : comportement d'avant
+            } else if (now - lostAt > kGiveUpMs) {
+                LOG_XR("le casque n'est pas revenu en 10 minutes : le jeu continue sans VR");
+                break;
+            }
+            for (int i = 0; i < 50 && !g_stop; ++i)
+                Sleep(100);
+        }
     }).detach();
 }
 

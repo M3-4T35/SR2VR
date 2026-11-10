@@ -46,6 +46,8 @@ play.bat           :: compile, ouvre le lanceur puis le jeu avec le mod
 play_steamvr.bat   :: idem en forçant le runtime OpenXR de SteamVR
 config.bat         :: ouvre seulement les réglages (un jeu en cours les applique en 1 s)
 probe.bat          :: banc d'essai OpenXR hors du jeu (tools/xr_probe)
+test.bat           :: tests automatiques (réglages, capture d'image), résultat dans build\test.log
+bench.bat          :: mesure le coût de la capture d'image sur la carte, résultat dans build\bench.log
 ```
 
 `build.bat` cherche vcpkg dans la variable `SR2VR_VCPKG`. À la main :

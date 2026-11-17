@@ -12,7 +12,7 @@ dev
                  └─ claude/cadence-et-mesures   (0.28.0, 0.29.0)
                      └─ claude/reconnexion-casque   (0.30.0)
                          └─ claude/tests-sans-casque   (0.31.0)
-                             └─ claude/interface-panneau   (0.32.0)  ← ce fichier
+                             └─ claude/interface-panneau   (0.32.0, 0.33.0)  ← ce fichier
 ```
 
 Tout compile avec MSVC (Win32, vcpkg) et les tests automatiques passent sur le PC
@@ -114,7 +114,7 @@ Pour essayer une seule étape : `git checkout <branche>`, puis `build.bat`.
   52 avec la lecture par un autre thread et un plafond à 240.
 - Les étapes 1 à 3 ci-dessous sont donc déjà passées **sur casque simulé** ; reste le ressenti.
 
-## 8. `claude/interface-panneau` (0.32.0)
+## 8. `claude/interface-panneau` (0.32.0, 0.33.0)
 
 - **`src/render/ui_panel.cpp`**, `[Hud] panel` (1 par défaut, « Interface en partie dans les deux
   yeux » dans l'onglet Affichage) : l'interface du jeu est retirée de l'image de l'œil gauche
@@ -122,13 +122,16 @@ Pour essayer une seule étape : `git checkout <branche>`, puis `build.bat`.
 - Vérifié par captures sur casque simulé : les deux yeux ont la même image, le calque contient
   la mini-carte, la vie, l'argent et les messages sur fond transparent. 46 paires par seconde.
 - Le voile sombre que le jeu posait sur l'œil gauche seulement n'est plus dessiné.
+- **Cadre de la mini-carte** (0.33.0, `[Hud] map_frame`, 1 par défaut) : l'anneau et les jauges de
+  notoriété retrouvent la taille de la carte, dans le coin bas gauche de l'interface.
 - `essai.bat` : compile puis lance un essai dont les arguments sont dans `build\essai_args.txt`.
 
 ## À vérifier au casque, dans cet ordre
 
 0. **Interface dans les deux yeux** : mini-carte, vie, argent, messages et roue des armes vus
    des deux yeux, nets, à quelques mètres, bien posés sur l'image ? Sinon : décocher
-   « Interface en partie dans les deux yeux » et me dire ce qui cloche.
+   « Interface en partie dans les deux yeux » et me dire ce qui cloche. Le cadre de la mini-carte
+   (anneau, jauges de notoriété quand tu es recherché) entoure-t-il bien la carte ?
 1. **Rien de cassé** avec les réglages par défaut : menus, boutiques, cinématiques, roue des
    armes, tir, corps à corps. Lancement sans lanceur (`play.bat --no-launcher`) : vrai relief
    et vue à la première personne dès le départ.

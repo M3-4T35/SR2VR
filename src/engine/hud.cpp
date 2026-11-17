@@ -1,4 +1,5 @@
 #include "engine/hud.h"
+#include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
 
@@ -110,6 +111,38 @@ void Place(float scale, float x, float y)
              static_cast<double>(scale), static_cast<double>(scale), static_cast<double>(x), static_cast<double>(y));
     if (!Execute(code) && ++g_failures == 1)
         LOG_ENGINE("interface : etat Lua absent ou execution en echec, l'interface n'est pas deplacee pour l'instant");
+
+    // La mini-carte est dessinée par un autre code du jeu, qui ne suit pas l'échelle de
+    // « safe_frame » : elle garde sa taille pendant que son cadre (le groupe « map_grp » : anneau,
+    // jauges de notoriété) rapetisse avec le reste. [Hud] map_frame=1 (par défaut) rend au cadre
+    // sa taille d'origine ; la carte se place d'elle-même au milieu du cadre. 2 : agrandi sans être
+    // déplacé (pour mesurer). 0 : comme avant.
+    // À part du reste : une erreur ici ne doit pas empêcher de placer l'interface.
+    const bool enlarge = scale < 0.999f && scale > 0.05f && config::Int("Hud", "map_frame", 1) != 0;
+    const float frame = enlarge ? 1.0f / scale : 1.0f;
+    // Ancre du cadre, dans le repère 1280 x 720 de l'interface. Celle du jeu, mesurée sur des
+    // captures : (97 ; 664), le milieu de la carte étant à peu près 108 à droite et 92 au-dessus.
+    // Agrandi, le cadre s'étend depuis son ancre : elle est reculée pour que le milieu de la
+    // carte tombe au point (97 ; 631) de l'interface, dans son coin bas gauche, sans recouvrir les
+    // barres de vie ni les messages (réglé pour une interface à 0,38).
+    static bool moved = false;
+    if (!enlarge && !moved)
+        return; // cadre jamais touché : il reste celui du jeu
+    moved = true;
+    const float ax = enlarge ? 97.0f - 108.0f * frame : 97.0f;
+    const float ay = enlarge ? 631.0f + 92.0f * frame : 664.0f;
+    char map[520];
+    snprintf(map, sizeof(map),
+             "local d = vint_document_find(\"hud\") "
+             "if d and d ~= 0 and d ~= -1 then "
+             "local m = vint_object_find(\"map_grp\", 0, d) "
+             "if m and m ~= 0 and m ~= -1 then "
+             "vint_set_property(m, \"scale\", %.4f, %.4f) "
+             "if %s then vint_set_property(m, \"anchor\", %.2f, %.2f) end "
+             "end end",
+             static_cast<double>(frame), static_cast<double>(frame),
+             config::Int("Hud", "map_frame", 1) == 2 ? "false" : "true", static_cast<double>(ax), static_cast<double>(ay));
+    Execute(map);
 }
 
 void ShowReticle(bool visible)

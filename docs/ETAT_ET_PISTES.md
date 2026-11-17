@@ -25,9 +25,9 @@ Problèmes ouverts, signalés au casque :
 
 1. **L'interface en jeu (mini-carte, vie, roue des armes) n'apparaît que dans l'œil gauche** en
    vrai relief. Traité le 17 novembre (section 5), à confirmer au casque.
-2. **La mini-carte ne rétrécit pas avec le reste de l'interface** : les jauges de notoriété
-   (police, gangs) autour d'elle suivent `[Hud]`, pas la carte, dessinée par un autre code du
-   jeu. Réglé du même coup par la section 5.
+2. **Le cadre de la mini-carte était plus petit que la carte** : les jauges de notoriété
+   (police, gangs) suivaient `[Hud]`, pas la carte, dessinée par un autre code du jeu. Traité
+   le 17 novembre (section 5, cadre agrandi), à confirmer au casque.
 3. **SteamVR se ferme** quand la liaison sans fil du Steam Frame tombe (il quitte de lui-même
    après 30 s sans casque) ; le jeu restait alors sur l'écran jusqu'à être relancé. La
    reconnexion (0.30.0) vise ce second point ; la coupure elle-même est côté réseau.
@@ -170,10 +170,19 @@ composition des calques par SteamVR n'est pas visible sans casque ;
 `docs/apercu_interface_deux_yeux.png` est un aperçu calculé à partir des captures (œil gauche,
 œil droit), une simulation et non ce que le casque affiche.
 
-Reste ouvert : **la mini-carte ne rétrécit pas avec le reste de l'interface** (elle garde sa
-taille d'origine et chevauche ses voisins). Piste inchangée : comme Juiced (`RadarScaling`),
-donner notre échelle au code qui la dessine (`0x007A2C30`, facteurs `0x022DBFAC` /
-`0x022DBFA8`, groupe `map_grp`). Les captures permettent maintenant de le vérifier sans casque.
+### Cadre de la mini-carte (0.33.0)
+
+La mini-carte est dessinée par un autre code du jeu, qui ne suit pas l'échelle de l'interface :
+elle gardait sa taille pendant que son cadre (le groupe `map_grp` : anneau, jauges de
+notoriété) rapetissait avec le reste et disparaissait dessous. `[Hud] map_frame=1` (par
+défaut) rend au cadre sa taille d'origine (échelle 1 / échelle de l'interface) ; la carte se
+place d'elle-même au milieu du cadre. Comme le cadre grandit depuis son ancre, celle-ci est
+reculée pour que l'ensemble reste dans le coin bas gauche de l'interface, sans recouvrir les
+barres de vie ni les messages. Ancre du jeu mesurée sur des captures : (97 ; 664) ; la
+fonction Lua `vint_get_property` n'a pas permis de la lire.
+
+Vérifié par capture : anneau et carte concentriques. Non vérifié : les jauges de notoriété
+elles-mêmes (il faut être recherché), et l'allure au casque.
 
 ## 6. Ce qui se vérifie sans le casque (mis à jour le 17 novembre)
 

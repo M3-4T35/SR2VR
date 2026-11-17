@@ -131,6 +131,12 @@ const Definition kDefs[] = {
       L"is taken out of the image and shown to both eyes, at the distance set above.",
       L"En vrai relief le jeu ne dessine son interface qu'une fois : elle n'apparaissait que dans l'œil gauche. "
       L"Activé, l'interface est retirée de l'image et montrée aux deux yeux, à la distance réglée ci-dessus."}},
+    {L"Hud", L"map_frame", kTabDisplay, {L"Mini-map frame at the size of the map", L"Cadre de la mini-carte à la taille de la carte"},
+     Kind::Bool, 1, 0, 1, 0, kNone,
+     {L"The mini-map keeps its size when the HUD is made smaller. When on, its frame (ring, notoriety gauges) is "
+      L"brought back to the same size.",
+      L"La mini-carte garde sa taille quand l'interface est rapetissée. Activé, son cadre (anneau, jauges de "
+      L"notoriété) retrouve la même taille."}},
     {L"Hud", L"panel_rate", kTabAdvanced, {L"HUD: refreshes per second", L"Interface : rafraîchissements par seconde"},
      Kind::Float, 15, 5, 60, 5, kNone,
      {L"How often the HUD shown to both eyes is refreshed. Each refresh costs the game 2 to 3 ms.",

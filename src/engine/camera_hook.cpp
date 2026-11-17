@@ -77,6 +77,7 @@
 #include "engine/player.h"
 #include "engine/prompts.h"
 #include "input/actions.h"
+#include "render/ui_panel.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "util/pattern.h"
@@ -634,7 +635,8 @@ void PlaceHud(const Settings& s, bool immersed, int eye, float ipd, float hfov)
     if (shrink) {
         x = 640.0f * (1.0f - scale);
         y = 360.0f * (1.0f - scale) + s.hudOffsetY;
-        if (eye >= 0 && s.hudDistance != 0.0f && hfov > 1.0f && hfov < 179.0f) {
+        // Sur le calque ([Hud] panel), c'est le casque qui décale l'interface d'un œil à l'autre
+        if (eye >= 0 && s.hudDistance != 0.0f && hfov > 1.0f && hfov < 179.0f && !render::ui_panel::Active()) {
             // Un point à la distance d, droit devant, se voit décalé de (écart / 2) / d dans
             // chaque œil ; la demi-largeur de l'image (640 unités) vaut tan(hfov / 2).
             const float shift = 0.5f * ipd * s.ipdScale / s.hudDistance / std::tan(hfov * 0.5f * 0.01745329f) * 640.0f;
@@ -1509,6 +1511,16 @@ void RemoveCameraHook()
     if (g_posApplied && g_pos)
         memcpy(g_pos, g_gamePos, sizeof(g_gamePos));
     g_posApplied = false;
+}
+
+bool PeekFrameView(int* eye, unsigned* pair)
+{
+    std::lock_guard lock(g_viewMutex);
+    if (!g_pendingCount || !g_pending[0].valid)
+        return false;
+    *eye = g_pending[0].eye;
+    *pair = g_pending[0].pair;
+    return true;
 }
 
 bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair, render::SightOverlay* sight)

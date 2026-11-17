@@ -1,6 +1,11 @@
 #pragma once
 
+struct IDirect3DDevice9;
+
 namespace render {
+
+// Device du jeu vu au dernier Present (nullptr avant le premier)
+IDirect3DDevice9* LastDevice();
 
 // Installe les hooks Present/Reset de Direct3D 9 (MinHook doit être initialisé). Renvoie
 // false (et loggue la raison) si l'installation échoue : le jeu continue alors sans VR.

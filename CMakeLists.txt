@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.20)
 # Dépendances vcpkg liées statiquement : la DLL est chargée par LoadLibrary depuis
 # build/, Windows ne chercherait pas ses DLL dépendantes à côté d'elle.
 set(VCPKG_TARGET_TRIPLET x86-windows-static CACHE STRING "")
-project(SR2VR VERSION 0.31.0 LANGUAGES CXX)
+project(SR2VR VERSION 0.32.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -47,6 +47,8 @@ add_library(sr2_vr SHARED
     src/engine/player.cpp
     src/render/d3d9_hook.cpp
     src/render/frame_capture.cpp
+    src/render/ui_panel.cpp
+    src/render/panel_image.cpp
     src/render/sight_overlay.cpp
     src/input/actions.cpp
     src/input/keys.cpp
@@ -86,7 +88,8 @@ add_dependencies(sr2_vr_injector sr2_vr_config)
 # la DLL hors de Saints Row 2 (runtime 32 bits fautif, ou problème propre au jeu ?)
 add_executable(xr_probe tools/xr_probe/main.cpp src/util/log.cpp src/util/config.cpp src/render/frame_capture.cpp
                src/render/sight_overlay.cpp src/input/actions.cpp src/input/keys.cpp src/input/vpad.cpp
-               src/input/test_script.cpp src/xr/xr_input.cpp src/xr/xr_laser.cpp src/xr/xr_session.cpp)
+               src/input/test_script.cpp src/xr/xr_input.cpp src/xr/xr_laser.cpp src/xr/xr_session.cpp
+               src/render/panel_image.cpp)
 target_include_directories(xr_probe PRIVATE src)
 target_compile_definitions(xr_probe PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX _CRT_SECURE_NO_WARNINGS)
 target_compile_options(xr_probe PRIVATE /utf-8 /W4)

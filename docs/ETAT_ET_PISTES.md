@@ -16,6 +16,7 @@ Rien de ce qui est marqué « non essayé » n'a été vu au casque.
 | idem | Frein d'images du jeu remplacé par un plafond, mesures (0.28.0) ; lecture de l'image par un autre thread (0.29.0) | `claude/cadence-et-mesures` |
 | idem | Reconnexion du casque quand la liaison tombe (0.30.0) | `claude/reconnexion-casque` |
 | Essais sans casque verts (casque simulé), **non essayé au casque réel** | Casque simulé, script d'entrées, captures des deux yeux, `smoke.bat`, `mesures.bat` (0.31.0) | `claude/tests-sans-casque` |
+| idem | Interface du jeu sur un calque montré aux deux yeux (0.32.0) | `claude/interface-panneau` |
 | Abandonné (plantages, œil droit blanc) | Interface recopiée dans l'œil droit (0.26.1 à 0.26.3) | `essai/interface-deux-yeux`, sur le PC seulement |
 
 Les branches `claude/…` sont empilées dans l'ordre du tableau : la dernière contient tout.
@@ -23,7 +24,7 @@ Les branches `claude/…` sont empilées dans l'ordre du tableau : la dernière 
 Problèmes ouverts, signalés au casque :
 
 1. **L'interface en jeu (mini-carte, vie, roue des armes) n'apparaît que dans l'œil gauche** en
-   vrai relief. Voir la section 5.
+   vrai relief. Traité le 17 novembre (section 5), à confirmer au casque.
 2. **La mini-carte ne rétrécit pas avec le reste de l'interface** : les jauges de notoriété
    (police, gangs) autour d'elle suivent `[Hud]`, pas la carte, dessinée par un autre code du
    jeu. Réglé du même coup par la section 5.
@@ -131,28 +132,48 @@ contre 2 fois 2,0).
    signature, mais quelques adresses fixes restent dans le code (liste de rendu, facteurs de
    la mini-carte). Les regrouper éviterait des surprises avec un autre exécutable.
 
-## 5. Interface en jeu dans les deux yeux : le plan
+## 5. Interface en jeu dans les deux yeux (fait le 17 novembre, à voir au casque)
 
-Ce qui a échoué : recopier les commandes de dessin de l'interface de l'œil gauche dans la
-liste de l'œil droit. Les commandes dépendent d'états posés par d'autres commandes ; trois
-essais, deux plantages et un œil blanc. Chaque essai demandait le casque.
+Ce qui avait échoué en octobre : recopier les commandes de dessin de l'interface de l'œil
+gauche dans la liste de l'œil droit (deux plantages, un œil blanc).
 
-Ce que je propose à la place, comme le fait le mod VR de Mount & Blade Warband :
+Ce qui est en place (`render/ui_panel`, `[Hud] panel=1`, version 0.32.0), mis au point sur le
+casque simulé, capture par capture :
 
-1. Le thread du rendu exécute la liste des commandes (fonction 0x00CF8FA0). Les dessins 2D de
-   l'interface (types 0x1C, 0x1D, texte 0x29) arrivent en fin de liste.
-2. Au premier dessin 2D d'une image, détourner la cible de rendu vers **une texture à nous,
-   transparente** ; la remettre à la fin de la liste.
-3. Relire cette texture (elle change peu : une fois par paire suffit) et la montrer au casque
-   comme **un panneau posé dans l'espace** (calque « quad » OpenXR, comme le point du laser).
-   Les deux yeux le voient, net, à la distance choisie, et sa taille ne dépend plus des
-   facteurs d'échelle du jeu : la mini-carte et ses jauges restent ensemble.
-4. Les images du jeu ne contiennent plus d'interface : plus de différence entre les yeux.
+1. Les appels Direct3D ne partent pas du thread qui exécute la liste des commandes, mais du
+   thread de la fenêtre. C'est là que le mod intervient, sur les méthodes du device du jeu
+   (SetRenderTarget, SetRenderState, SetTexture et les quatre dessins).
+2. Une image du jeu se termine toujours de la même façon : retour au back buffer, deux ou
+   trois dessins dont la texture est une cible de rendu de la taille de l'écran (la scène finie
+   qu'on recopie), puis, pour l'œil gauche seulement, 150 à 260 dessins : l'interface.
+3. À partir du premier de ces dessins, et jusqu'au Present, la cible devient une texture
+   transparente à nous. L'image des deux yeux ne contient plus d'interface.
+4. Cette texture est relue 12 à 15 fois par seconde (`[Hud] panel_rate`) et montrée par le
+   casque **par-dessus les deux yeux**, avec la vue qui a servi à la dessiner : ce qui est
+   accroché au décor (le « $3000 » au-dessus d'une liasse) reste à sa place. Elle est décalée
+   d'un œil à l'autre pour paraître à `[Hud] distance`.
 
-Points durs connus : la transparence (le jeu ne tient pas le canal alpha de sa cible, il
-faudra forcer un mélange séparé pour l'alpha), le device en PUREDEVICE (on ne peut pas relire
-ses états, il faut les suivre), et repérer sans erreur la frontière entre la scène et
-l'interface. Il faut le casque pour itérer : à faire en séance, pas à distance.
+Détails qui ont compté :
+
+- Le jeu dessine d'abord un voile qui multiplie toute l'image (assombrissement ou teinte),
+  dans l'œil gauche seulement. Sur un calque transparent il donnait un fond noir opaque. Il
+  n'est plus dessiné du tout : les deux yeux ont maintenant la même image.
+- L'alpha du calque suit le mélange choisi par le jeu pour chaque dessin : « par-dessus » pour
+  un mélange ordinaire, inchangé pour la lumière ajoutée et pour ce qui est découpé par
+  l'alpha déjà en place (la carte ronde).
+- Coût mesuré : 46 paires par seconde avec le calque, contre 47 à 48 sans. À 30 lectures par
+  seconde il tombait à 35 : chaque lecture coûte 2 à 3 ms au jeu.
+
+Ce que le casque simulé ne dit pas, et qu'il faut regarder au casque réel : le calque est-il
+bien superposé à l'image, à la bonne distance, sans bord sombre autour des textes ? La
+composition des calques par SteamVR n'est pas visible sans casque ;
+`docs/apercu_interface_deux_yeux.png` est un aperçu calculé à partir des captures (œil gauche,
+œil droit), une simulation et non ce que le casque affiche.
+
+Reste ouvert : **la mini-carte ne rétrécit pas avec le reste de l'interface** (elle garde sa
+taille d'origine et chevauche ses voisins). Piste inchangée : comme Juiced (`RadarScaling`),
+donner notre échelle au code qui la dessine (`0x007A2C30`, facteurs `0x022DBFAC` /
+`0x022DBFA8`, groupe `map_grp`). Les captures permettent maintenant de le vérifier sans casque.
 
 ## 6. Ce qui se vérifie sans le casque (mis à jour le 17 novembre)
 
@@ -189,8 +210,7 @@ sans doute plus bas, et l'écart reste à confirmer.
 
 ### Ce que les captures montrent déjà
 
-- **L'interface n'est que dans l'œil gauche** : le défaut signalé au casque se voit sur les
-  captures (`essai_06_gauche.bmp` a la mini-carte, la vie et l'argent ; `essai_06_droit.bmp`
-  non). Le plan de la section 5 peut donc être mené sans le casque, capture par capture.
+- **L'interface n'était que dans l'œil gauche** : le défaut signalé au casque se voyait sur les
+  captures de la 0.31.0. C'est ce qui a permis de le traiter sans le casque (section 5).
 - La mini-carte est dessinée à l'écart de sa jauge circulaire : second défaut visible aussi.
 - La tête et le chapeau du personnage apparaissent en haut de l'image à la première personne.

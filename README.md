@@ -18,7 +18,8 @@ Version actuelle : voir `project(SR2VR VERSION …)` dans `CMakeLists.txt`.
   le regard. Vue à la première personne (yeux du personnage), à pied comme en véhicule.
 - **Écran virtuel automatique** pour le menu de pause, les cinématiques, les boutiques, la
   garde-robe et le garage.
-- **Interface** ramenée vers le centre de l'image et posée à quelques mètres en relief.
+- **Interface** ramenée vers le centre de l'image, retirée de l'image du jeu et montrée aux deux
+  yeux sur un calque posé à quelques mètres (`[Hud] panel`).
 - **Mains** : un rayon de visée par manette, armes et bras posés sur les manettes, tir à deux
   armes (une gâchette par main), point d'impact dessiné par le casque.
 - **Corps à corps au geste** : poings, armes blanches et coup de crosse.

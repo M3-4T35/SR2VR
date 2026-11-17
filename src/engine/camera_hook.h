@@ -17,6 +17,10 @@ void RemoveCameraHook();
 // vues sont rendues dans l'ordre où les images ont été préparées. pair : numéro de la paire
 // en vrai relief (deux images du même instant du jeu, œil gauche puis œil droit), 0 sinon.
 // sight : repère de visée projeté avec la caméra de cette image.
+// Thread du rendu, avant le Present : œil et paire de l'image en cours de dessin, sans la
+// retirer de la file. false : pas de caméra de jeu pour cette image.
+bool PeekFrameView(int* eye, unsigned* pair);
+
 bool TakeFrameView(float headQuat[4], int* eye, float* hfovDeg, unsigned* pair, render::SightOverlay* sight);
 
 } // namespace engine

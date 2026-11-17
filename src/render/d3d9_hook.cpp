@@ -10,6 +10,7 @@
 // image) et on copie le back buffer pour le casque (render/frame_capture), sans rien
 // modifier au rendu du jeu.
 #include "render/d3d9_hook.h"
+#include "render/ui_panel.h"
 #include "engine/camera_hook.h"
 #include "render/frame_capture.h"
 #include "util/hook.h"
@@ -208,6 +209,7 @@ void OnPresent(IDirect3DDevice9* device, const char* via, void* caller)
     // la vue (orientation de tête, champ de vue) qui a servi à la rendre
     FrameView view;
     view.valid = engine::TakeFrameView(view.headQuat, &view.eye, &view.hfovDeg, &view.pair, &view.sight);
+    ui_panel::OnPresent(device, view); // rend le back buffer au jeu si l'interface était redirigée
     CaptureFrame(device, view);
 
     const unsigned long long n = ++g_frames;
@@ -375,6 +377,7 @@ HRESULT STDMETHODCALLTYPE HkDeviceReset(IDirect3DDevice9* self, D3DPRESENT_PARAM
     if (pp)
         LogPresentParameters("demande", *pp);
     ReleaseCaptureResources(); // sinon le Reset échoue (surfaces D3DPOOL_DEFAULT)
+    ui_panel::ReleaseResources();
     const HRESULT hr = g_deviceReset[V](self, pp);
     LOG_RENDER("Reset -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;
@@ -386,6 +389,7 @@ HRESULT STDMETHODCALLTYPE HkResetEx(IDirect3DDevice9Ex* self, D3DPRESENT_PARAMET
     if (pp)
         LogPresentParameters("demande", *pp);
     ReleaseCaptureResources();
+    ui_panel::ReleaseResources();
     const HRESULT hr = g_resetEx(self, pp, mode);
     LOG_RENDER("ResetEx -> 0x%08lX", static_cast<unsigned long>(hr));
     return hr;
@@ -543,6 +547,11 @@ bool InstallD3D9Hooks()
         return false;
     LOG_RENDER("%zu fonction(s) detournee(s) et activee(s), en attente du premier Present du jeu", g_targets.size());
     return true;
+}
+
+IDirect3DDevice9* LastDevice()
+{
+    return g_lastDevice.load();
 }
 
 unsigned long long PresentCount()

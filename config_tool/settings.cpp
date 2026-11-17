@@ -125,6 +125,17 @@ const Definition kDefs[] = {
       L"Oui : dans les menus (pause, carte, garde-robe, boutiques), les manettes font une manette Xbox : sticks, A B X Y, "
       L"gâchettes, boutons hauts ou poignées. Se déplacer sur la carte, tourner le personnage dans la garde-robe. Non : "
       L"flèches, Entrée et Échap du clavier."}},
+    {L"Hud", L"panel", kTabDisplay, {L"HUD in both eyes", L"Interface en partie dans les deux yeux"}, Kind::Bool, 1, 0, 1, 0,
+     kNone,
+     {L"In true stereo the game draws its HUD only once, so it used to show in the left eye only. When on, the HUD "
+      L"is taken out of the image and shown to both eyes, at the distance set above.",
+      L"En vrai relief le jeu ne dessine son interface qu'une fois : elle n'apparaissait que dans l'œil gauche. "
+      L"Activé, l'interface est retirée de l'image et montrée aux deux yeux, à la distance réglée ci-dessus."}},
+    {L"Hud", L"panel_rate", kTabAdvanced, {L"HUD: refreshes per second", L"Interface : rafraîchissements par seconde"},
+     Kind::Float, 15, 5, 60, 5, kNone,
+     {L"How often the HUD shown to both eyes is refreshed. Each refresh costs the game 2 to 3 ms.",
+      L"Combien de fois par seconde l'interface montrée aux deux yeux est mise à jour. Chaque mise à jour coûte "
+      L"2 à 3 ms au jeu."}},
     {L"Hud", L"prompts", kTabControls, {L"Game messages show", L"Les messages du jeu montrent"}, Kind::Choice, 1, 0, 2, 0,
      {L"Keyboard keys|Controller buttons|Controller buttons (pad drawings, trial)",
       L"Les touches du clavier|Les boutons des manettes|Les boutons (dessins de manette, essai)"},

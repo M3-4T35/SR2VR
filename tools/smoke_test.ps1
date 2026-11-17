@@ -142,6 +142,21 @@ if (-not (Test-Path $log) -or (Get-Item $log).LastWriteTime -lt $start) {
             $incomplete = ($lines | Select-String -Pattern "paires du jeu : [\d.]+ par seconde, (\d+) incomplete" |
                 ForEach-Object { [int]$_.Matches[0].Groups[1].Value } | Measure-Object -Sum).Sum
             if ($incomplete -gt 5) { $problems += "$incomplete paires incompletes (oeil droit manquant)" }
+            # Interface du jeu sur son calque ([Hud] panel, par défaut) : retirée de l'image de l'œil
+            # gauche à presque toutes les images, et le calque n'est ni vide ni plein
+            if (($Set -notmatch "Hud\.panel=0") -and $Script) {
+                $panel = $lines | Select-String -Pattern "calque de l'interface : (\d+) images de l'oeil gauche, (\d+) avec l'interface redirigee" |
+                    Select-Object -Last 1
+                if (-not $panel) { $problems += "calque de l'interface : aucune image redirigee" }
+                elseif ([int]$panel.Matches[0].Groups[2].Value -lt 0.9 * [int]$panel.Matches[0].Groups[1].Value) {
+                    $problems += "calque de l'interface : $($panel.Line.Trim())"
+                }
+                $covered = $lines | Select-String -Pattern "panneau de l'interface : \d+x\d+, ([\d.]+) % de l'image couverte" |
+                    ForEach-Object { [double]::Parse($_.Matches[0].Groups[1].Value, [cultureinfo]::InvariantCulture) }
+                $good = @($covered | Where-Object { $_ -gt 0.3 -and $_ -lt 40 })
+                if ($covered -and -not $good.Count) { $problems += "calque de l'interface vide ou plein (couverture : $($covered -join ', ') %)" }
+                elseif ($good.Count) { Write-Output ("interface : sur son calque, {0} % de l'image couverte" -f $good[-1]) }
+            }
             # Les deux yeux d'une même capture : même paire, et de la lumière dans l'œil droit
             $right = $lines | Select-String -Pattern "capture (\d+), oeil droit : \d+x\d+, luminosite moyenne (\d+), image n. \d+, paire (\d+)"
             $lit = @($right | Where-Object { [int]$_.Matches[0].Groups[2].Value -ge 5 -and [int]$_.Matches[0].Groups[3].Value -gt 0 })

@@ -1,6 +1,6 @@
 # À reprendre en local (fichier temporaire, à supprimer une fois fusionné)
 
-Travail fait sans le casque, du 4 au 10 novembre 2026, sur sept branches **empilées** : chacune
+Travail fait sans le casque, du 4 au 10 novembre 2026, sur huit branches **empilées** : chacune
 part de la précédente, donc la dernière contient tout.
 
 ```
@@ -11,7 +11,8 @@ dev
              └─ claude/tir-deux-pistolets   (0.27.1)
                  └─ claude/cadence-et-mesures   (0.28.0, 0.29.0)
                      └─ claude/reconnexion-casque   (0.30.0)
-                         └─ claude/tests-sans-casque   (0.31.0)  ← ce fichier
+                         └─ claude/tests-sans-casque   (0.31.0)
+                             └─ claude/interface-panneau   (0.32.0)  ← ce fichier
 ```
 
 Tout compile avec MSVC (Win32, vcpkg) et les tests automatiques passent sur le PC
@@ -23,7 +24,7 @@ Tout compile avec MSVC (Win32, vcpkg) et les tests automatiques passent sur le P
 
 ```bat
 git fetch origin
-git checkout claude/tests-sans-casque
+git checkout claude/interface-panneau
 build.bat
 ```
 
@@ -113,8 +114,21 @@ Pour essayer une seule étape : `git checkout <branche>`, puis `build.bat`.
   52 avec la lecture par un autre thread et un plafond à 240.
 - Les étapes 1 à 3 ci-dessous sont donc déjà passées **sur casque simulé** ; reste le ressenti.
 
+## 8. `claude/interface-panneau` (0.32.0)
+
+- **`src/render/ui_panel.cpp`**, `[Hud] panel` (1 par défaut, « Interface en partie dans les deux
+  yeux » dans l'onglet Affichage) : l'interface du jeu est retirée de l'image de l'œil gauche
+  et montrée aux deux yeux sur un calque, à la distance `[Hud] distance`.
+- Vérifié par captures sur casque simulé : les deux yeux ont la même image, le calque contient
+  la mini-carte, la vie, l'argent et les messages sur fond transparent. 46 paires par seconde.
+- Le voile sombre que le jeu posait sur l'œil gauche seulement n'est plus dessiné.
+- `essai.bat` : compile puis lance un essai dont les arguments sont dans `build\essai_args.txt`.
+
 ## À vérifier au casque, dans cet ordre
 
+0. **Interface dans les deux yeux** : mini-carte, vie, argent, messages et roue des armes vus
+   des deux yeux, nets, à quelques mètres, bien posés sur l'image ? Sinon : décocher
+   « Interface en partie dans les deux yeux » et me dire ce qui cloche.
 1. **Rien de cassé** avec les réglages par défaut : menus, boutiques, cinématiques, roue des
    armes, tir, corps à corps. Lancement sans lanceur (`play.bat --no-launcher`) : vrai relief
    et vue à la première personne dès le départ.

@@ -1,0 +1,13 @@
+# Comme partie.txt, en plus court : entrée en partie, deux captures (yeux et panneau de
+# l'interface). Ne jamais descendre dans le menu (Coop et Multijoueur sont plus bas).
+wait 15000
+pad start
+wait 28000
+pad a
+wait 24000
+log en partie
+shot
+wait 12000
+shot
+axis ly -1 2000
+shot

@@ -14,6 +14,7 @@
 #include "engine/camera_hook.h"
 #include "input/test_script.h"
 #include "render/d3d9_hook.h"
+#include "render/ui_panel.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_session.h"
@@ -249,6 +250,7 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD reason, LPVOID reserved)
         // (reserved != nullptr) les autres threads sont déjà morts, on ne touche à rien.
         xr::RequestStop();
         engine::RemoveCameraHook();
+        render::ui_panel::Remove();
         render::RemoveD3D9Hooks();
         if (g_minhookReady)
             MH_Uninitialize();

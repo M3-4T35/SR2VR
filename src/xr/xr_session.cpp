@@ -9,6 +9,7 @@
 #include "input/keys.h"
 #include "input/test_script.h"
 #include "render/frame_capture.h"
+#include "render/panel_image.h"
 #include "util/config.h"
 #include "util/log.h"
 #include "xr/xr_input.h"
@@ -236,6 +237,33 @@ void SaveShot(const render::CpuFrame& frame, int number, const char* eye)
            frame.view.pair, path);
 }
 
+// Script d'essai : le panneau de l'interface, posé sur un fond gris (ce qu'on en verrait) et
+// son alpha seul (ce qu'il couvre)
+void SavePanelShot(int number)
+{
+    render::CpuFrame panel;
+    ULONGLONG tick = 0;
+    if (!render::TakePanel(panel, 0, &tick))
+        return;
+    render::CpuFrame alpha = panel;
+    unsigned long long covered = 0;
+    for (size_t i = 0; i + 3 < panel.pixels.size(); i += 4) {
+        const unsigned a = panel.pixels[i + 3];
+        covered += a > 8;
+        for (int c = 0; c < 3; ++c) {
+            // Couleurs déjà multipliées par l'alpha : par-dessus un gris 96
+            const unsigned over = panel.pixels[i + c] + 96u * (255u - a) / 255u;
+            panel.pixels[i + c] = static_cast<uint8_t>(over > 255u ? 255u : over);
+            alpha.pixels[i + c] = static_cast<uint8_t>(a);
+        }
+    }
+    LOG_XR("capture %d, panneau de l'interface : %ux%u, %.1f %% de l'image couverte, lu il y a %llu ms", number,
+           panel.width, panel.height, 400.0 * static_cast<double>(covered) / static_cast<double>(panel.pixels.size() + 1),
+           GetTickCount64() - tick);
+    SaveShot(panel, number, "panneau");
+    SaveShot(alpha, number, "panneau_alpha");
+}
+
 class XrApp {
 public:
     ~XrApp() { Shutdown(); }
@@ -254,6 +282,7 @@ private:
     void PollEvents();
     void RenderFrame();
     bool CopyGameFrame(int eye);
+    bool CopyPanel();
     void Shutdown();
 
     XrInstance instance_ = XR_NULL_HANDLE;
@@ -280,6 +309,12 @@ private:
         render::CpuFrame frame;  // dernière image du jeu reçue pour cet œil, avec sa vue
     };
     EyeTarget eyes_[2];
+    // Calque de l'interface du jeu ([Hud] panel) : sa propre swapchain, montrée aux deux yeux
+    EyeTarget panel_;
+    UINT panelWidth_ = 0, panelHeight_ = 0;
+    int panelMode_ = 1;
+    float hudDistance_ = 5.0f;
+    unsigned panelShown_ = 0;
     int64_t format_ = 0;
     UINT scWidth_ = 0;
     UINT scHeight_ = 0;
@@ -320,6 +355,8 @@ void XrApp::ReadConfig()
     fovScale_ = config::Float("Display", "fov_scale", 1.0f);
     if (!(fovScale_ > 0.2f && fovScale_ < 5.0f))
         fovScale_ = 1.0f;
+    panelMode_ = config::Int("Hud", "panel", 1);
+    hudDistance_ = config::Float("Hud", "distance", 5.0f);
 }
 
 // Écran virtuel à kScreenDistance devant la tête, à sa hauteur, face à elle, vertical
@@ -576,6 +613,65 @@ void XrApp::DestroySwapchains()
         eye.hasContent = false;
     }
     scWidth_ = scHeight_ = 0;
+    if (panel_.swapchain != XR_NULL_HANDLE)
+        xrDestroySwapchain(panel_.swapchain);
+    panel_.swapchain = XR_NULL_HANDLE;
+    panel_.images.clear();
+    panel_.hasContent = false;
+    panelWidth_ = panelHeight_ = 0;
+}
+
+// Dernière image du calque de l'interface vers sa swapchain (créée à sa taille)
+bool XrApp::CopyPanel()
+{
+    const UINT w = panel_.frame.width, h = panel_.frame.height;
+    if (!w || !h)
+        return false;
+    if (panel_.swapchain == XR_NULL_HANDLE || w != panelWidth_ || h != panelHeight_) {
+        if (panel_.swapchain != XR_NULL_HANDLE)
+            xrDestroySwapchain(panel_.swapchain);
+        panel_.swapchain = XR_NULL_HANDLE;
+        panel_.hasContent = false;
+        XrSwapchainCreateInfo ci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
+        ci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;
+        ci.format = format_;
+        ci.sampleCount = 1;
+        ci.width = w;
+        ci.height = h;
+        ci.faceCount = 1;
+        ci.arraySize = 1;
+        ci.mipCount = 1;
+        if (!Check(xrCreateSwapchain(session_, &ci, &panel_.swapchain), "xrCreateSwapchain (calque de l'interface)")) {
+            panel_.swapchain = XR_NULL_HANDLE;
+            return false;
+        }
+        uint32_t count = 0;
+        xrEnumerateSwapchainImages(panel_.swapchain, 0, &count, nullptr);
+        panel_.images.assign(count, {XR_TYPE_SWAPCHAIN_IMAGE_D3D11_KHR});
+        xrEnumerateSwapchainImages(panel_.swapchain, count, &count,
+                                   reinterpret_cast<XrSwapchainImageBaseHeader*>(panel_.images.data()));
+        panelWidth_ = w;
+        panelHeight_ = h;
+        LOG_XR("calque de l'interface : swapchain %ux%u creee (%u images)", w, h, count);
+    }
+    bool copied = false;
+    uint32_t index = 0;
+    XrSwapchainImageAcquireInfo ai{XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO};
+    XrSwapchainImageWaitInfo wi{XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO};
+    wi.timeout = XR_INFINITE_DURATION;
+    if (Check(xrAcquireSwapchainImage(panel_.swapchain, &ai, &index), "xrAcquireSwapchainImage (calque)")) {
+        if (Check(xrWaitSwapchainImage(panel_.swapchain, &wi), "xrWaitSwapchainImage (calque)")) {
+            context_->UpdateSubresource(panel_.images[index].texture, 0, nullptr, panel_.frame.pixels.data(), w * 4, 0);
+            copied = true;
+        }
+        XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
+        xrReleaseSwapchainImage(panel_.swapchain, &ri);
+    }
+    if (copied) {
+        panel_.hasContent = true;
+        panel_.copiedTick = GetTickCount64();
+    }
+    return copied;
 }
 
 void XrApp::PollEvents()
@@ -738,10 +834,14 @@ void XrApp::RenderFrame()
         for (int eye = 0; eye < 2; ++eye)
             if (fresh[eye] && CopyGameFrame(eye))
                 ++framesCopied_;
+        ULONGLONG panelTick = 0;
+        if (panelMode_ == 1 && render::TakePanel(panel_.frame, panel_.frame.seq, &panelTick))
+            CopyPanel();
         int shot = 0;
         if (input::TakeShotRequest(&shot)) {
             SaveShot(eyes_[0].frame, shot, "gauche");
             SaveShot(eyes_[1].frame, shot, "droit");
+            SavePanelShot(shot);
         }
         // Image suivante : capturée par le jeu à son prochain Present
         render::RequestFrame();
@@ -751,8 +851,11 @@ void XrApp::RenderFrame()
     XrCompositionLayerProjection projection{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
     XrCompositionLayerProjectionView projected[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
                                                   {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
+    XrCompositionLayerProjection panelLayer{XR_TYPE_COMPOSITION_LAYER_PROJECTION};
+    XrCompositionLayerProjectionView panelViews[2]{{XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW},
+                                                   {XR_TYPE_COMPOSITION_LAYER_PROJECTION_VIEW}};
     XrCompositionLayerQuad sights[Laser::kMaxLayers];
-    const XrCompositionLayerBaseHeader* layers[1 + Laser::kMaxLayers]{};
+    const XrCompositionLayerBaseHeader* layers[2 + Laser::kMaxLayers]{};
     uint32_t layerCount = 0;
 
     // Affichage : 2 = relief (une image par œil, rendue avec la caméra décalée), 1 = immersif
@@ -798,6 +901,30 @@ void XrApp::RenderFrame()
         }
         shownMode_ = shown;
         ++shownCount_[shown];
+        // Interface du jeu, retirée de l'image de l'œil gauche : la même image par-dessus les
+        // deux yeux, avec la vue qui a servi à la dessiner (ce qui est accroché au décor y reste),
+        // décalée d'un œil à l'autre pour paraître à [Hud] distance et non à l'infini
+        if (panelMode_ == 1 && panel_.hasContent && panel_.frame.view.valid &&
+            panel_.frame.view.hfovDeg > 1.0f && nowTick - panel_.copiedTick < 400) {
+            const float half = std::atan(std::tan(panel_.frame.view.hfovDeg * 0.5f * 0.01745329f) * fovScale_);
+            const float halfUp = std::atan(std::tan(half) * static_cast<float>(panelHeight_) / static_cast<float>(panelWidth_));
+            const float shift = hudDistance_ > 0.1f ? std::atan(0.5f * g_ipd.load() / hudDistance_) : 0.0f;
+            for (int i = 0; i < 2; ++i) {
+                const float s = i == 0 ? shift : -shift; // œil gauche : l'image part vers la droite
+                panelViews[i].pose.position = views[i].pose.position;
+                panelViews[i].pose.orientation = {panel_.frame.view.headQuat[0], panel_.frame.view.headQuat[1],
+                                                  panel_.frame.view.headQuat[2], panel_.frame.view.headQuat[3]};
+                panelViews[i].fov = {-half + s, half + s, halfUp, -halfUp};
+                panelViews[i].subImage.swapchain = panel_.swapchain;
+                panelViews[i].subImage.imageRect = {{0, 0}, {static_cast<int32_t>(panelWidth_), static_cast<int32_t>(panelHeight_)}};
+            }
+            panelLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT; // couleurs déjà multipliées
+            panelLayer.space = localSpace_;
+            panelLayer.viewCount = 2;
+            panelLayer.views = panelViews;
+            layers[layerCount++] = reinterpret_cast<const XrCompositionLayerBaseHeader*>(&panelLayer);
+            ++panelShown_;
+        }
         // Repère de visée des manettes, par-dessus l'image du jeu : seulement en partie, quand
         // l'image entoure la tête
         if (headPoseValid_ && input_.Gameplay()) {
@@ -876,6 +1003,14 @@ void XrApp::RenderFrame()
             LOG_XR("  images avec vue : oeil gauche %u (luminosite moyenne %.0f sur 255), oeil droit %u (luminosite "
                    "moyenne %.0f)",
                    capture.eyeCount[0], capture.eyeLuma[0], capture.eyeCount[1], capture.eyeLuma[1]);
+        unsigned panelLeft = 0, panelRedirected = 0, panelRead = 0;
+        double panelMs = 0.0;
+        render::TakePanelStats(&panelLeft, &panelRedirected, &panelRead, &panelMs);
+        if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && (panelLeft || panelShown_))
+            LOG_XR("  calque de l'interface : %u images de l'oeil gauche, %u avec l'interface redirigee, %u lues (%.2f ms "
+                   "par image redirigee), montre sur %u images du casque",
+                   panelLeft, panelRedirected, panelRead, panelMs, panelShown_);
+        panelShown_ = 0;
         unsigned sightShown[2];
         laser_.TakeStats(sightShown);
         if ((statsLogged_ < 30 || statsLogged_ % 6 == 0) && sightShown[0] + sightShown[1])

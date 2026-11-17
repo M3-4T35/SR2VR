@@ -12,6 +12,7 @@
 #include <string>
 
 #include "engine/camera_hook.h"
+#include "input/test_script.h"
 #include "render/d3d9_hook.h"
 #include "util/config.h"
 #include "util/log.h"
@@ -223,6 +224,7 @@ DWORD WINAPI InitThread(LPVOID)
     }
     xr::Start();
     engine::InstallCameraHook();
+    input::StartTestScript(); // essais sans casque : rien si sr2_vr_test.txt est absent
 
     // Le jeu présente-t-il des images par les fonctions détournées ? Vérifié une fois.
     Sleep(15000);

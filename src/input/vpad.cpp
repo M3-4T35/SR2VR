@@ -1,6 +1,7 @@
 #include "input/vpad.h"
 #include "util/log.h"
 
+#include <mutex>
 #include <windows.h>
 
 #include <cstdint>
@@ -60,6 +61,13 @@ bool g_failed = false; // échec définitif, déjà loggué
 bool g_waitingLogged = false;
 bool g_buttons[kButtonCount]{};
 int16_t g_axes[kAxisCount]{};
+// Deux threads au plus : celui du casque et celui du script d'essai
+std::recursive_mutex g_mutex;
+bool g_wanted[kButtonCount]{};    // ce que demandent les manettes VR
+float g_wantedAxes[kAxisCount]{};
+bool g_script[kButtonCount]{};    // ce que tient le script d'essai
+bool g_scriptAxisOn[kAxisCount]{};
+float g_scriptAxes[kAxisCount]{};
 
 template <typename T>
 bool Resolve(HMODULE sdl, const char* name, T* out)
@@ -83,6 +91,7 @@ bool Ready()
 
 bool Attach()
 {
+    std::lock_guard lock(g_mutex);
     if (g_joystick)
         return true;
     if (g_failed)
@@ -136,18 +145,22 @@ bool Attach()
     return true;
 }
 
-void SetButton(int button, bool down)
+namespace {
+
+void ApplyButton(int button)
 {
-    if (!g_joystick || button < 0 || button >= kButtonCount || g_buttons[button] == down)
+    const bool down = g_wanted[button] || g_script[button];
+    if (!g_joystick || g_buttons[button] == down)
         return;
     g_buttons[button] = down;
     g_setButton(g_joystick, button, down);
 }
 
-void SetAxis(int axis, float value)
+void ApplyAxis(int axis)
 {
-    if (!g_joystick || axis < 0 || axis >= kAxisCount)
+    if (!g_joystick)
         return;
+    const float value = g_scriptAxisOn[axis] ? g_scriptAxes[axis] : g_wantedAxes[axis];
     int raw = 0;
     if (axis >= kLeftTrigger) {
         const float v = value < 0.0f ? 0.0f : value > 1.0f ? 1.0f : value;
@@ -159,6 +172,45 @@ void SetAxis(int axis, float value)
     const auto clamped = static_cast<int16_t>(raw < INT16_MIN ? INT16_MIN : raw > INT16_MAX ? INT16_MAX : raw);
     if (g_axes[axis] != clamped)
         SendAxis(axis, clamped);
+}
+
+} // namespace
+
+void SetButton(int button, bool down)
+{
+    if (button < 0 || button >= kButtonCount)
+        return;
+    std::lock_guard lock(g_mutex);
+    g_wanted[button] = down;
+    ApplyButton(button);
+}
+
+void SetAxis(int axis, float value)
+{
+    if (axis < 0 || axis >= kAxisCount)
+        return;
+    std::lock_guard lock(g_mutex);
+    g_wantedAxes[axis] = value;
+    ApplyAxis(axis);
+}
+
+void SetScriptButton(int button, bool down)
+{
+    if (button < 0 || button >= kButtonCount)
+        return;
+    std::lock_guard lock(g_mutex);
+    g_script[button] = down;
+    ApplyButton(button);
+}
+
+void SetScriptAxis(int axis, bool active, float value)
+{
+    if (axis < 0 || axis >= kAxisCount)
+        return;
+    std::lock_guard lock(g_mutex);
+    g_scriptAxisOn[axis] = active;
+    g_scriptAxes[axis] = value;
+    ApplyAxis(axis);
 }
 
 void Reset()

@@ -1,0 +1,10 @@
+# Du lancement au menu principal : captures de l'écran virtuel, sans rien valider dans le menu
+wait 15000
+shot
+wait 8000
+shot
+pad start
+wait 6000
+shot
+wait 6000
+shot

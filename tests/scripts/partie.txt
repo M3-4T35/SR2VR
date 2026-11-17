@@ -1,0 +1,20 @@
+# Menu principal -> Continuer (dernière sauvegarde, solo) -> quelques pas en partie, captures
+# des deux yeux. « Continuer » est la première ligne du menu, déjà sélectionnée : ne jamais
+# descendre dans le menu (Coop et Multijoueur sont plus bas).
+wait 15000
+pad start
+wait 28000
+log menu principal
+shot
+pad a
+wait 6000
+shot
+wait 15000
+shot
+wait 25000
+log en partie ?
+shot
+axis ly -1 3000
+shot
+wait 22000
+shot

@@ -45,4 +45,9 @@ void SetAxis(int axis, float value);
 // Tout relâché, sticks au centre
 void Reset();
 
+// Script d'essai (input/test_script) : bouton tenu ou axe imposé quoi que demandent les manettes
+// VR, depuis un autre thread que celui du casque
+void SetScriptButton(int button, bool down);
+void SetScriptAxis(int axis, bool active, float value);
+
 } // namespace input::vpad

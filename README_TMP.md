@@ -1,6 +1,6 @@
 # À reprendre en local (fichier temporaire, à supprimer une fois fusionné)
 
-Travail fait sans le casque, du 4 au 10 novembre 2026, sur six branches **empilées** : chacune
+Travail fait sans le casque, du 4 au 10 novembre 2026, sur sept branches **empilées** : chacune
 part de la précédente, donc la dernière contient tout.
 
 ```
@@ -10,7 +10,8 @@ dev
          └─ claude/capture-asynchrone   (0.27.0)
              └─ claude/tir-deux-pistolets   (0.27.1)
                  └─ claude/cadence-et-mesures   (0.28.0, 0.29.0)
-                     └─ claude/reconnexion-casque   (0.30.0)  ← ce fichier
+                     └─ claude/reconnexion-casque   (0.30.0)
+                         └─ claude/tests-sans-casque   (0.31.0)  ← ce fichier
 ```
 
 Tout compile avec MSVC (Win32, vcpkg) et les tests automatiques passent sur le PC
@@ -22,7 +23,7 @@ Tout compile avec MSVC (Win32, vcpkg) et les tests automatiques passent sur le P
 
 ```bat
 git fetch origin
-git checkout claude/reconnexion-casque
+git checkout claude/tests-sans-casque
 build.bat
 ```
 
@@ -102,6 +103,15 @@ Pour essayer une seule étape : `git checkout <branche>`, puis `build.bat`.
 - **`src/xr/xr_session.cpp`**, `[Display] reconnect` (0 par défaut) : quand la session se
   termine toute seule (liaison coupée, SteamVR fermé), nouvelle tentative pendant dix minutes.
 - Dans tous les cas, une session perdue se termine proprement au lieu de remplir le journal.
+
+## 7. `claude/tests-sans-casque` (0.31.0)
+
+- **Casque simulé** (`tools/vr_null.ps1`, repris de WarbandVR) et **script d'entrées** rejoué
+  par la DLL (`src/input/test_script`) : `smoke.bat` lance le jeu, entre en partie, capture les
+  deux yeux, vérifie le journal et ferme le jeu ; `mesures.bat` compare les réglages.
+- Résultat du 17 novembre, même scène : 30 paires par seconde avec le frein du jeu, 48 sans,
+  52 avec la lecture par un autre thread et un plafond à 240.
+- Les étapes 1 à 3 ci-dessous sont donc déjà passées **sur casque simulé** ; reste le ressenti.
 
 ## À vérifier au casque, dans cet ordre
 

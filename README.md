@@ -48,6 +48,8 @@ config.bat         :: ouvre seulement les réglages (un jeu en cours les appliqu
 probe.bat          :: banc d'essai OpenXR hors du jeu (tools/xr_probe)
 test.bat           :: tests automatiques (réglages, capture d'image), résultat dans build\test.log
 bench.bat          :: mesure le coût de la capture d'image sur la carte, résultat dans build\bench.log
+smoke.bat          :: essais sans casque : lance le jeu (casque simulé), entre en partie, vérifie, ferme
+mesures.bat        :: la même scène en partie avec plusieurs réglages, pour comparer les cadences
 ```
 
 `build.bat` cherche vcpkg dans la variable `SR2VR_VCPKG`. À la main :
@@ -105,6 +107,24 @@ valeurs par défaut, aide) est dans `config_tool/settings.cpp`.
 | `tools/re/` | Scripts Python (capstone) d'analyse statique de `SR2_pc.exe`, voir leur README |
 | `tools/check_settings.py` | Vérifie que DLL, injecteur et lanceur ont les mêmes valeurs par défaut |
 | `tools/tests/` | Tests lancés par `ctest -C Release` : lecture de `sr2_vr.ini` comparée à l'API Windows, capture d'image synchrone et asynchrone sur un vrai device Direct3D 9 |
+
+## Essais sans casque
+
+`smoke.bat` lance trois essais à la suite (cinq minutes, le jeu est ouvert puis fermé par le
+script, toujours en solo) et écrit le résultat dans `build\smoke.log` :
+
+1. **démarrage** : le jeu seul jusqu'au menu ; signatures trouvées, détours posés, images vues.
+2. **menu** : avec un **casque simulé** (SteamVR et son pilote « null », dans une configuration
+   à part : `build\vr_null`, les réglages SteamVR habituels ne sont ni lus ni modifiés) ; la
+   session OpenXR doit atteindre FOCUSED et le casque recevoir les images du jeu.
+3. **partie** : un script d'entrées (`tests\scripts\partie.txt`) appuie sur Start puis A
+   (« Continuer », la dernière sauvegarde) avec la manette virtuelle, avance de quelques pas et
+   capture les deux yeux ; le vrai relief doit produire des paires d'images complètes.
+
+Journal et captures (`.bmp`, demi-taille) de chaque essai : `build\smoke\<essai>`. Le script
+d'entrées est rejoué par la DLL quand `sr2_vr_test.txt` existe à côté d'elle (commandes dans
+`src/input/test_script.h`) ; `tools\smoke_test.ps1` le pose et le retire. Limites : tête
+immobile, pas de manettes VR simulées, rien sur le ressenti.
 
 ## Vérifications
 

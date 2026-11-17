@@ -7,6 +7,7 @@
 // (render/frame_capture) au lieu d'une texture partagée.
 #include "xr/xr_session.h"
 #include "input/keys.h"
+#include "input/test_script.h"
 #include "render/frame_capture.h"
 #include "util/config.h"
 #include "util/log.h"
@@ -181,6 +182,58 @@ bool SelectRuntime()
         return false;
     }
     return true;
+}
+
+// Script d'essai : dernière image reçue pour un œil, en BMP 24 bits à demi-taille, dans
+// le dossier captures à côté de la DLL
+void SaveShot(const render::CpuFrame& frame, int number, const char* eye)
+{
+    if (!frame.width || !frame.height || frame.pixels.size() < static_cast<size_t>(frame.width) * frame.height * 4) {
+        LOG_XR("capture %d, oeil %s : pas d'image", number, eye);
+        return;
+    }
+    std::string dir = config::Path();
+    const size_t slash = dir.find_last_of("\\/");
+    dir = (slash == std::string::npos ? std::string() : dir.substr(0, slash + 1)) + "captures";
+    CreateDirectoryA(dir.c_str(), nullptr);
+    char path[MAX_PATH]{};
+    snprintf(path, sizeof(path), "%s\\essai_%02d_%s.bmp", dir.c_str(), number, eye);
+    const UINT w = frame.width / 2, h = frame.height / 2;
+    const UINT stride = (w * 3 + 3) & ~3u;
+    std::vector<uint8_t> rows(static_cast<size_t>(stride) * h);
+    unsigned long long luma = 0;
+    for (UINT y = 0; y < h; ++y) {
+        const uint8_t* src = frame.pixels.data() + static_cast<size_t>(y) * 2 * frame.width * 4;
+        uint8_t* dst = rows.data() + static_cast<size_t>(h - 1 - y) * stride; // BMP : lignes du bas vers le haut
+        for (UINT x = 0; x < w; ++x, src += 8, dst += 3) {
+            dst[0] = src[0];
+            dst[1] = src[1];
+            dst[2] = src[2];
+            luma += src[1];
+        }
+    }
+    BITMAPFILEHEADER fh{};
+    BITMAPINFOHEADER ih{};
+    fh.bfType = 0x4D42;
+    fh.bfOffBits = sizeof(fh) + sizeof(ih);
+    fh.bfSize = fh.bfOffBits + static_cast<DWORD>(rows.size());
+    ih.biSize = sizeof(ih);
+    ih.biWidth = static_cast<LONG>(w);
+    ih.biHeight = static_cast<LONG>(h);
+    ih.biPlanes = 1;
+    ih.biBitCount = 24;
+    FILE* f = nullptr;
+    if (fopen_s(&f, path, "wb") || !f) {
+        LOG_XR("capture %d, oeil %s : ecriture impossible (%s)", number, eye, path);
+        return;
+    }
+    fwrite(&fh, sizeof(fh), 1, f);
+    fwrite(&ih, sizeof(ih), 1, f);
+    fwrite(rows.data(), 1, rows.size(), f);
+    fclose(f);
+    LOG_XR("capture %d, oeil %s : %ux%u, luminosite moyenne %.0f, image n. %llu, paire %u, %s", number, eye, w, h,
+           static_cast<double>(luma) / (static_cast<double>(w) * h), static_cast<unsigned long long>(frame.seq),
+           frame.view.pair, path);
 }
 
 class XrApp {
@@ -685,6 +738,11 @@ void XrApp::RenderFrame()
         for (int eye = 0; eye < 2; ++eye)
             if (fresh[eye] && CopyGameFrame(eye))
                 ++framesCopied_;
+        int shot = 0;
+        if (input::TakeShotRequest(&shot)) {
+            SaveShot(eyes_[0].frame, shot, "gauche");
+            SaveShot(eyes_[1].frame, shot, "droit");
+        }
         // Image suivante : capturée par le jeu à son prochain Present
         render::RequestFrame();
     }

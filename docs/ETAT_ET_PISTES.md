@@ -15,6 +15,7 @@ Rien de ce qui est marqué « non essayé » n'a été vu au casque.
 | idem | Deux pistolets : chaque gâchette tire même si l'autre est tenue (0.27.1) | `claude/tir-deux-pistolets` |
 | idem | Frein d'images du jeu remplacé par un plafond, mesures (0.28.0) ; lecture de l'image par un autre thread (0.29.0) | `claude/cadence-et-mesures` |
 | idem | Reconnexion du casque quand la liaison tombe (0.30.0) | `claude/reconnexion-casque` |
+| Essais sans casque verts (casque simulé), **non essayé au casque réel** | Casque simulé, script d'entrées, captures des deux yeux, `smoke.bat`, `mesures.bat` (0.31.0) | `claude/tests-sans-casque` |
 | Abandonné (plantages, œil droit blanc) | Interface recopiée dans l'œil droit (0.26.1 à 0.26.3) | `essai/interface-deux-yeux`, sur le PC seulement |
 
 Les branches `claude/…` sont empilées dans l'ordre du tableau : la dernière contient tout.
@@ -153,17 +154,43 @@ faudra forcer un mélange séparé pour l'alpha), le device en PUREDEVICE (on ne
 ses états, il faut les suivre), et repérer sans erreur la frontière entre la scène et
 l'interface. Il faut le casque pour itérer : à faire en séance, pas à distance.
 
-## 6. Ce que Claude peut vérifier sans le casque
+## 6. Ce qui se vérifie sans le casque (mis à jour le 17 novembre)
+
+Repris de WarbandVR : un **casque simulé** (SteamVR avec son pilote « null », dans une
+configuration à part) et un **script d'entrées** rejoué par la DLL. `smoke.bat` lance le jeu,
+entre dans la dernière sauvegarde par « Continuer », avance, capture les deux yeux, lit le
+journal et ferme le jeu. `mesures.bat` rejoue la même scène avec plusieurs réglages.
 
 | Vérification | Possible ? | Comment |
 | --- | --- | --- |
-| Le code compile | Oui | Dans le conteneur (zig) puis MSVC sur le PC (`build.bat`) |
+| Le code compile | Oui | Conteneur (zig) puis MSVC sur le PC (`build.bat`) |
 | La capture d'image est juste (pixels, paires, Reset, trois modes) | Oui, sur la vraie carte | `test.bat` |
-| Ce que coûte la capture | Oui | `bench.bat` |
-| Les réglages du lanceur et de la DLL concordent | Oui | `tools/check_settings.py` |
-| Le jeu démarre avec le mod, les détours se posent, pas de plantage | Oui, **avec ton accord** : lancer le jeu sur l'écran, sans casque, et lire le journal | `play.bat` par l'explorateur, puis `sr2_vr.log` |
-| Les lignes « cadence » et « temps par image » en jeu | En partie : sans casque, pas de paires d'images à mesurer comme en vrai relief | idem |
-| L'image dans le casque, le relief, la latence, les manettes, le confort | Non | Toi, au casque |
+| Le jeu démarre avec le mod, signatures et détours en place | Oui | `smoke.bat`, essai « démarrage » |
+| La session OpenXR va jusqu'au bout et le casque reçoit les images | Oui, casque simulé | `smoke.bat`, essai « menu » |
+| Le vrai relief en partie : paires complètes, œil droit non vide | Oui, casque simulé | `smoke.bat`, essai « partie » |
+| Ce que voit chaque œil | Oui : captures `.bmp` dans `build\smoke\<essai>` | commande `shot` du script |
+| La cadence en partie selon les réglages | Oui, sur une scène fixe | `mesures.bat` |
+| Le suivi de tête, les manettes VR, la latence, le confort | Non : tête immobile, pas de manettes simulées | Toi, au casque |
 
-Limite du lancement sur l'écran : je ne sais pas fermer le jeu proprement moi-même, et un jeu
-en plein écran gêne une session à distance. D'où l'accord demandé à chaque fois.
+### Mesures du 17 novembre
+
+Même scène (réveil dans la planque, quelques pas), casque simulé à 60 Hz, RTX 3060 Ti :
+
+| Réglages | Paires par seconde | Temps d'une paire |
+| --- | --- | --- |
+| Frein du jeu (`frame_cap=0`, comme avant la 0.28.0) | 30,2 | 33,1 ms |
+| Frein levé (`frame_cap=100`, par défaut depuis la 0.28.0) | 47,7 | 20,7 ms |
+| Frein levé et lecture par un autre thread (`async_capture=2`) | 49,4 (bute sur le plafond de 100 images) | 20,4 ms |
+| Lecture par un autre thread, plafond à 240 | 51,7 | 18,1 ms |
+
+Lever le frein donne donc **environ 58 % de paires en plus** sur cette scène. Au casque réel la
+machine a d'autres charges (SteamVR envoie l'image au Steam Frame) : les chiffres y seront
+sans doute plus bas, et l'écart reste à confirmer.
+
+### Ce que les captures montrent déjà
+
+- **L'interface n'est que dans l'œil gauche** : le défaut signalé au casque se voit sur les
+  captures (`essai_06_gauche.bmp` a la mini-carte, la vie et l'argent ; `essai_06_droit.bmp`
+  non). Le plan de la section 5 peut donc être mené sans le casque, capture par capture.
+- La mini-carte est dessinée à l'écart de sa jauge circulaire : second défaut visible aussi.
+- La tête et le chapeau du personnage apparaissent en haut de l'image à la première personne.
